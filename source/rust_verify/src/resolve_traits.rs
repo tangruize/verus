@@ -35,6 +35,19 @@ pub(crate) fn resolve_trait_item<'tcx>(
         crate::internal_err!(span, "resolve_trait_method called for non-trait item");
     };
 
+    let trait_arg_count = tcx.generics_of(trait_def_id).count();
+    if args.len() < trait_arg_count {
+        // Rustc's trait-selection machinery assumes the TraitRef carries
+        // enough generic arguments for the trait (including `Self`). Some
+        // HIR call sites (notably those synthesized by attribute-mode
+        // verification) can reach this path with an empty substitution list.
+        // Passing that malformed TraitRef into `codegen_select_candidate`
+        // makes rustc panic in `generic_args.rs` while assembling candidates.
+        // Treat it as an unresolved/generic method instead; callers already
+        // handle that by emitting a dynamic call target.
+        return Ok(ResolutionResult::Unresolved);
+    }
+
     let normalized_args = tcx.normalize_erasing_regions(typing_env, args);
     let trait_ref = TraitRef::new(tcx, trait_def_id, normalized_args);
 

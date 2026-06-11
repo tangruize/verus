@@ -389,6 +389,17 @@ fn instantiate_pred_clauses<'tcx>(
     mut def_id: DefId,
     args: rustc_middle::ty::GenericArgsRef<'tcx>,
 ) -> Vec<(Option<ClauseFrom<'tcx>>, Clause<'tcx>)> {
+    if args.len() < tcx.generics_of(def_id).count() {
+        // Some HIR call sites can reach here with an empty substitution
+        // list even though the target's predicates need generic args
+        // (e.g., `Self` for trait predicates). Rustc's predicate
+        // instantiation assumes the args are present and panics otherwise.
+        // If we don't have enough information to instantiate the bounds,
+        // skip impl-path collection for this call rather than aborting the
+        // verifier.
+        return Vec::new();
+    }
+
     // We could get the information directly like this:
     let direct_clauses = tcx.predicates_of(def_id).instantiate(tcx, args).predicates;
     // but we need a little more information, so we manually reimplement some of instantiate here:
