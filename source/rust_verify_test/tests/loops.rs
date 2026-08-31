@@ -592,6 +592,101 @@ test_verify_one_file_with_options! {
 }
 
 test_verify_one_file_with_options! {
+    #[test] loop_break_value ["exec_allows_no_decreases_clause"] => verus_code! {
+        struct Token {
+            value: u64,
+        }
+
+        fn test_basic() {
+            let value = loop {
+                break 5u64;
+            };
+            assert(value == 5);
+        }
+
+        fn test_explicit_unit_value() {
+            let _: () = loop {
+                break ();
+            };
+        }
+
+        fn test_multiple_paths(select_first: bool) {
+            let value = loop {
+                if select_first {
+                    break 10u64;
+                } else {
+                    break 20u64;
+                }
+            };
+            assert((select_first && value == 10) || (!select_first && value == 20));
+        }
+
+        fn test_labeled_outer_break() {
+            let value = 'outer: loop {
+                loop {
+                    break 'outer 30u64;
+                }
+            };
+            assert(value == 30);
+        }
+
+        fn test_nested_isolation_boundaries(select_middle: bool) {
+            let _value = 'outer: loop {
+                let mut result = 0u64;
+                'middle: loop {
+                    loop {
+                        if select_middle {
+                            break 'middle;
+                        }
+                        break;
+                    }
+                    result = 50;
+                    break 'outer result;
+                }
+                break 'outer result;
+            };
+        }
+
+        fn test_break_from_nested_loop_condition(select_outer: bool) {
+            let _value = 'outer: loop {
+                let mut index = 0u64;
+                while ({
+                    if select_outer {
+                        break 'outer 60u64;
+                    }
+                    index < 1
+                })
+                    invariant index <= 1
+                {
+                    index = index + 1;
+                }
+                break 'outer 70u64;
+            };
+        }
+
+        fn test_non_copy_result() {
+            let token = loop {
+                break Token { value: 40 };
+            };
+            assert(token.value == 40);
+        }
+
+        #[verifier::allow_complex_invariants]
+        fn test_value_evaluated_once() {
+            let mut count = 0u64;
+            let value = loop
+                invariant_except_break count == 0
+            {
+                count = count + 1;
+                break count;
+            };
+            assert(count == 1);
+            assert(value == 1);
+        }
+    } => Ok(())
+}
+
+test_verify_one_file_with_options! {
     #[test] while_b ["exec_allows_no_decreases_clause"] => verus_code! {
         fn test(b: bool) {
             while b {
