@@ -100,6 +100,27 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] vec_iter_mut_works verus_code! {
+        use vstd::prelude::*;
+
+        fn set_all_to_zero() {
+            let mut values: Vec<u32> = vec![1, 2, 3, 4];
+            for value in iter: values.iter_mut()
+                invariant
+                    after_borrow(values)@.len() == iter.seq().len(),
+                    forall|i: int| #![auto] 0 <= i < iter.seq().len()
+                        ==> *final(iter.seq()[i]) == after_borrow(values)@[i],
+                    forall|i: int| #![auto] 0 <= i < iter.index()
+                        ==> *final(iter.seq()[i]) == 0,
+            {
+                *value = 0;
+            }
+            assert(values@ == seq![0u32, 0, 0, 0]);
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
     #[test] find_works verus_code! {
         use vstd::prelude::*;
         use vstd::std_specs::iter::IteratorSpec;
@@ -145,6 +166,126 @@ test_verify_one_file! {
                 assert(0 <= idx < v.len() && v[idx] >= 10);
                 assert(exists |i| 0 <= i < v.len() && v[i] >= 10);
             }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] iter_mut_contract_has_verified_model verus_code! {
+        use vstd::prelude::*;
+        use vstd::std_specs::iter::*;
+
+        fn split_all<'a, T>(slice: &'a mut [T]) -> (refs: Vec<&'a mut T>)
+            ensures
+                refs@.len() == old(slice)@.len(),
+                forall|i: int| #![trigger refs@[i]] 0 <= i < refs@.len()
+                    ==> *(refs@[i]) == old(slice)@[refs@.len() - 1 - i],
+                final(slice)@.len() == old(slice)@.len(),
+                forall|i: int| #![trigger refs@[i]] 0 <= i < refs@.len()
+                    ==> *final(refs@[i]) == final(slice)@[refs@.len() - 1 - i],
+        {
+            let ghost original_len = slice@.len();
+            let ghost final_slice: Seq<T> = final(slice)@;
+            let mut refs: Vec<&'a mut T> = Vec::new();
+            let mut rest: &'a mut [T] = slice;
+            while rest.len() > 0
+                invariant
+                    rest@.len() + refs@.len() == original_len,
+                    forall|i: int| #![trigger rest@[i]] 0 <= i < rest@.len()
+                        ==> rest@[i] == old(slice)@[i],
+                    forall|i: int| #![trigger refs@[i]] 0 <= i < refs@.len()
+                        ==> *(refs@[i]) == old(slice)@[original_len - 1 - i],
+                    final_slice == final(rest)@ + Seq::new(
+                        refs@.len() as nat,
+                        |j: int| *final(refs@[refs@.len() - 1 - j]),
+                    ),
+                decreases rest.len(),
+            {
+                let (head, tail) = rest.split_at_mut(rest.len() - 1);
+                let last = tail.first_mut().unwrap();
+                refs.push(last);
+                rest = head;
+            }
+            refs
+        }
+
+        struct ModelIterMut<'a, T> {
+            refs: Vec<&'a mut T>,
+        }
+
+        impl<'a, T> ModelIterMut<'a, T> {
+            closed spec fn remaining_len(&self) -> nat {
+                self.refs@.len()
+            }
+
+            fn new(values: &'a mut Vec<T>) -> (iter: ModelIterMut<'a, T>)
+                ensures
+                    IteratorSpec::remaining(&iter).len() == old(values)@.len(),
+                    final(values)@.len() == old(values)@.len(),
+                    forall|i: int| #![trigger IteratorSpec::remaining(&iter)[i]]
+                        0 <= i < old(values)@.len()
+                        ==> *(IteratorSpec::remaining(&iter)[i]) == old(values)@[i],
+                    forall|i: int| #![trigger IteratorSpec::remaining(&iter)[i]]
+                        0 <= i < old(values)@.len()
+                        ==> *final(IteratorSpec::remaining(&iter)[i]) == final(values)@[i],
+                    IteratorSpec::obeys_prophetic_iter_laws(&iter),
+                    IteratorSpec::will_return_none(&iter),
+                    IteratorSpec::decrease(&iter) is Some,
+            {
+                let slice = values.as_mut_slice();
+                let refs = split_all(slice);
+                ModelIterMut { refs }
+            }
+        }
+
+        impl<'a, T> Iterator for ModelIterMut<'a, T> {
+            type Item = &'a mut T;
+
+            fn next(&mut self) -> (result: Option<&'a mut T>) {
+                self.refs.pop()
+            }
+        }
+
+        impl<'a, T> IteratorSpecImpl for ModelIterMut<'a, T> {
+            open spec fn obeys_prophetic_iter_laws(&self) -> bool {
+                true
+            }
+
+            #[verifier::prophetic]
+            closed spec fn remaining(&self) -> Seq<Self::Item> {
+                Seq::new(self.refs@.len(), |i: int| self.refs@[self.refs@.len() - 1 - i])
+            }
+
+            #[verifier::prophetic]
+            closed spec fn will_return_none(&self) -> bool {
+                true
+            }
+
+            closed spec fn decrease(&self) -> Option<nat> {
+                Some(self.refs@.len() as nat)
+            }
+
+            open spec fn peek(&self, index: int) -> Option<Self::Item> {
+                None
+            }
+        }
+
+        broadcast proof fn lemma_remaining_len<'a, T>(iter: &ModelIterMut<'a, T>)
+            ensures
+                #[trigger] IteratorSpec::remaining(iter).len() == iter.remaining_len(),
+        {
+        }
+
+        fn mutation_flows_back_to_source() {
+            let mut values: Vec<u32> = vec![10, 20];
+            let mut iter = ModelIterMut::new(&mut values);
+
+            let first = iter.next().unwrap();
+            *first = 100;
+            let second = iter.next().unwrap();
+            *second = 200;
+
+            assert(values@ == seq![100u32, 200]);
         }
     } => Ok(())
 }
