@@ -4,6 +4,18 @@ mod common;
 use common::*;
 
 test_verify_one_file! {
+    #[test] wildcard_parameter verus_code! {
+        proof fn test() {
+            let f: spec_fn(int) -> int = |_| 7;
+            assert(f(10) == 7);
+
+            let g: spec_fn(int, int) -> int = |_, _| 8;
+            assert(g(10, 20) == 8);
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
     #[test] test1 verus_code! {
         proof fn testfun1() {
             let f = |x: int| x + 1;

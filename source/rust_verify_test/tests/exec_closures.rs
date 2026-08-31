@@ -3,6 +3,23 @@
 mod common;
 use common::*;
 
+test_verify_one_file_with_options! {
+    #[test] wildcard_parameter ["vstd"] => verus_code! {
+        use vstd::prelude::*;
+
+        fn testfn() {
+            let f = |_: u64| -> (result: u64)
+                ensures result == 7
+            {
+                7
+            };
+
+            let result = f(10);
+            assert(result == 7);
+        }
+    } => Ok(())
+}
+
 // 1 arg closures
 
 // REVIEW: exec closures implicitly rely on vstd
