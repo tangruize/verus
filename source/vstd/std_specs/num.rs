@@ -237,6 +237,27 @@ macro_rules! num_specs {
                     }
                 );
 
+            pub open spec fn div_ceil(lhs: $uN, rhs: $uN) -> $uN
+                recommends
+                    rhs != 0,
+            {
+                if lhs % rhs == 0 {
+                    lhs / rhs
+                } else {
+                    (lhs / rhs + 1) as $uN
+                }
+            }
+
+            #[verifier::when_used_as_spec(div_ceil)]
+            #[cfg(not(verus_verify_core))]
+            pub assume_specification[<$uN>::div_ceil](lhs: $uN, rhs: $uN) -> (result: $uN)
+                requires
+                    rhs != 0,
+                ensures
+                    result == div_ceil(lhs, rhs),
+                no_unwind
+            ;
+
             #[verifier::allow_in_spec]
             #[cfg(not(verus_verify_core))]
             pub assume_specification[<$uN>::saturating_add](x: $uN, y: $uN) -> $uN

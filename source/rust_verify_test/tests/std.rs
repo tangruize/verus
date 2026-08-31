@@ -1319,6 +1319,49 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] unsigned_div_ceil verus_code! {
+        use vstd::prelude::*;
+
+        fn test_u8() {
+            assert(0u8.div_ceil(7) == 0);
+            assert(8u8.div_ceil(4) == 2);
+            assert(7u8.div_ceil(4) == 2);
+            assert(u8::MAX.div_ceil(1) == u8::MAX);
+            assert(u8::MAX.div_ceil(2) == 128);
+        }
+
+        fn test_usize() {
+            assert(0usize.div_ceil(7) == 0);
+            assert(8usize.div_ceil(4) == 2);
+            assert(7usize.div_ceil(4) == 2);
+            assert(usize::MAX.div_ceil(1) == usize::MAX);
+        }
+
+        fn test_symbolic(value: usize, divisor: usize)
+            requires
+                divisor != 0,
+        {
+            let result = value.div_ceil(divisor);
+            assert(result == if value % divisor == 0 {
+                value / divisor
+            } else {
+                (value / divisor + 1) as usize
+            });
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] unsigned_div_ceil_requires_nonzero_divisor verus_code! {
+        use vstd::prelude::*;
+
+        fn test_zero_divisor() {
+            let _ = 10usize.div_ceil(0); // FAILS
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
     #[test] checked_rem_div_systematic_fails verus_code! {
         use vstd::prelude::*;
 
