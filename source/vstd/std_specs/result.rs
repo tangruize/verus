@@ -249,6 +249,30 @@ pub assume_specification<T, E, F, O: FnOnce(E) -> F>[Result::<T, E>::map_err](re
         ),
         result.is_ok() ==> mapped_result == Result::<T, F>::Ok(result->Ok_0);
 
+// and_then
+pub assume_specification<T, E, U, F: FnOnce(T) -> Result<U, E>>[ Result::<T, E>::and_then ](
+    result: Result<T, E>,
+    op: F,
+) -> (chained_result: Result<U, E>)
+    requires
+        result is Ok ==> op.requires((result->Ok_0,)),
+    ensures
+        result is Ok ==> op.ensures((result->Ok_0,), chained_result),
+        result is Err ==> chained_result == Result::<U, E>::Err(result->Err_0),
+;
+
+// inspect_err
+pub assume_specification<T, E, F: FnOnce(&E) -> ()>[ Result::<T, E>::inspect_err ](
+    result: Result<T, E>,
+    inspect: F,
+) -> (inspected_result: Result<T, E>)
+    requires
+        result is Err ==> inspect.requires((&result->Err_0,)),
+    ensures
+        inspected_result == result,
+        result is Err ==> inspect.ensures((&result->Err_0,), ()),
+;
+
 // ok
 #[verifier::inline]
 pub open spec fn ok<T, E>(result: Result<T, E>) -> Option<T> {

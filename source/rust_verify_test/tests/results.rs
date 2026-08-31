@@ -82,3 +82,45 @@ test_verify_one_file! {
         }
     } => Ok(())
 }
+
+test_verify_one_file! {
+    #[test] result_and_then_and_inspect_err verus_code! {
+        use vstd::prelude::*;
+
+        fn checked_increment(value: u8) -> (result: Result<u8, u8>)
+            requires
+                value < u8::MAX,
+            ensures
+                result is Ok,
+                result->Ok_0 == value + 1,
+        {
+            Ok(value + 1)
+        }
+
+        fn inspect_seven(error: &u8)
+            requires
+                *error == 7,
+        {
+        }
+
+        fn test_and_then_ok() {
+            let result = Ok::<u8, u8>(4).and_then(checked_increment);
+            assert(result == Ok(5));
+        }
+
+        fn test_and_then_err() {
+            let result = Err::<u8, u8>(7).and_then(checked_increment);
+            assert(result == Err(7));
+        }
+
+        fn test_inspect_err() {
+            let result = Err::<u8, u8>(7).inspect_err(inspect_seven);
+            assert(result == Err(7));
+        }
+
+        fn test_inspect_err_ok() {
+            let result = Ok::<u8, u8>(4).inspect_err(inspect_seven);
+            assert(result == Ok(4));
+        }
+    } => Ok(())
+}
