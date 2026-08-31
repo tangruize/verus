@@ -1893,6 +1893,32 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] formatter_write_fmt_ok verus_code! {
+        use vstd::*;
+        use core::fmt::{Display, Error, Formatter};
+
+        struct Label(u8);
+
+        impl Display for Label {
+            fn fmt(&self, formatter: &mut Formatter<'_>) -> Result<(), Error> {
+                formatter.write_fmt(format_args!("label {}", self.0))
+            }
+        }
+
+        impl vstd::std_specs::fmt::DisplaySpecImpl for Label {
+            open spec fn fmt_req(&self, formatter: &Formatter<'_>) -> bool {
+                true
+            }
+        }
+
+        fn test(formatter: &mut Formatter<'_>) {
+            let literal_result = formatter.write_fmt(format_args!("literal"));
+            let value_result = formatter.write_fmt(format_args!("value {}", 7u8));
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
     #[test] format_fail verus_code! {
         use vstd::*;
         use core::fmt::{Display, Error, Formatter};

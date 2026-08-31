@@ -148,6 +148,12 @@ pub assume_specification<'a>[ Arguments::<'a>::from_str ](s: &'static str) -> Ar
 pub assume_specification<'a>[ Arguments::<'a>::from_str_nonconst ](s: &'static str) -> Arguments<'a>
 ;
 
+pub assume_specification<'a, 'b, 'c>[ Formatter::<'a>::write_fmt ](
+    formatter: &'b mut Formatter<'a>,
+    arguments: Arguments<'c>,
+) -> Result<(), Error>
+;
+
 // Specially handled stand-in for Arguments::new (because it uses the private Argument type)
 #[cfg_attr(verus_keep_ghost, rustc_diagnostic_item = "verus::vstd::std_specs::fmt::Arguments::new")]
 #[verifier::external]
