@@ -314,6 +314,19 @@ pub(crate) fn pat_to_var<'tcx>(pat: &Pat) -> Result<VarIdent, VirErr> {
     Ok(name)
 }
 
+fn closure_param_to_var<'tcx>(pat: &Pat) -> Result<(bool, VarIdent), VirErr> {
+    if matches!(pat.kind, PatKind::Wild) {
+        unsupported_err_unless!(pat.default_binding_modes, pat.span, "default_binding_modes");
+        let name = str_unique_var(
+            "%closure_param",
+            vir::ast::VarIdentDisambiguate::RustcId(pat.hir_id.local_id.index()),
+        );
+        Ok((false, name))
+    } else {
+        pat_to_mut_var(pat)
+    }
+}
+
 pub(crate) fn extract_array<'tcx>(expr: &'tcx Expr<'tcx>) -> Vec<&'tcx Expr<'tcx>> {
     match &expr.kind {
         ExprKind::Array(fields) => fields.iter().collect(),
@@ -4102,7 +4115,7 @@ pub(crate) fn closure_to_vir<'tcx>(
                     return err_span(x.span, "closures only accept exec-mode parameters");
                 }
 
-                let (_is_mut, name) = pat_to_mut_var(x.pat)?;
+                let (_is_mut, name) = closure_param_to_var(x.pat)?;
                 Ok(Arc::new(VarBinderX { name, a: t }))
             })
             .collect::<Result<Vec<_>, _>>()?;
