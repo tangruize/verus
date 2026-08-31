@@ -5,7 +5,7 @@ use super::super::seq::{
 
 use verus as verus_;
 
-use core::iter::{FromIterator, Iterator, Rev};
+use core::iter::{FilterMap, FromIterator, Iterator, Rev};
 
 verus_! {
 
@@ -186,6 +186,20 @@ pub trait ExIterator {
                         f.ensures((#[trigger] old(self).remaining()[i],), false)
                 }
             };
+
+    fn filter_map<B, F>(self, f: F) -> (r: FilterMap<Self, F>)
+        where
+            Self: Sized,
+            F: FnMut(Self::Item) -> Option<B>,
+        requires
+            self.obeys_prophetic_iter_laws(),
+            self.decrease() is Some,
+            forall|k| #![auto] 0 <= k < self.remaining().len()
+                ==> f.requires((self.remaining()[k],)),
+        ensures
+            filter_map_post::<Self, F, B>(self, f, r),
+    ;
+
 }
 
 #[verifier::external_trait_specification]
@@ -374,6 +388,95 @@ impl <I> IteratorSpecImpl for &mut I
 }
 
 /********************************************************************************
+ * Definitions for `filter_map()`
+ ********************************************************************************/
+
+#[verifier::external_body]
+#[verifier::external_type_specification]
+#[verifier::reject_recursive_types(I)]
+#[verifier::reject_recursive_types(F)]
+pub struct ExFilterMap<I, F>(FilterMap<I, F>);
+
+pub uninterp spec fn filter_map_iter<I, F>(r: FilterMap<I, F>) -> I;
+
+pub uninterp spec fn filter_map_fun<I, F>(r: FilterMap<I, F>) -> F;
+
+pub open spec fn type_identity<B>() -> spec_fn(B) -> B {
+    |value: B| value
+}
+
+pub uninterp spec fn filter_map_outputs<I, F, B>(
+    result: FilterMap<I, F>,
+    output_type: spec_fn(B) -> B,
+) -> Seq<Option<B>>;
+
+// This indirection avoids a cyclic Iterator/IteratorSpec bound on the external trait method.
+pub uninterp spec fn filter_map_post<I, F, B>(
+    iter: I,
+    f: F,
+    result: FilterMap<I, F>,
+) -> bool;
+
+pub open spec fn option_identity<B>() -> spec_fn(Option<B>) -> Option<B> {
+    |output: Option<B>| output
+}
+
+pub broadcast axiom fn filter_map_postcondition<I, F, B>(
+    iter: I,
+    f: F,
+    result: FilterMap<I, F>,
+)
+    where
+        I: IteratorSpec,
+        F: FnMut(I::Item) -> Option<B>,
+    requires
+        iter.obeys_prophetic_iter_laws(),
+        iter.decrease() is Some,
+        forall|k| #![auto] 0 <= k < iter.remaining().len()
+            ==> f.requires((iter.remaining()[k],)),
+        #[trigger] filter_map_post::<I, F, B>(iter, f, result),
+    ensures
+        {
+            let outputs = filter_map_outputs(result, type_identity::<B>());
+            {
+                &&& outputs.len() <= iter.remaining().len()
+                &&& forall|i| 0 <= i < outputs.len()
+                    ==> f.ensures((iter.remaining()[i],), #[trigger] outputs[i])
+                &&& IteratorSpec::remaining(&result)
+                    == outputs.filter_map(option_identity::<B>())
+                &&& IteratorSpec::remaining(&result).len() <= iter.remaining().len()
+                &&& IteratorSpec::will_return_none(&result)
+                    ==> iter.will_return_none() && outputs.len() == iter.remaining().len()
+                &&& IteratorSpec::decrease(&result) is Some == iter.decrease() is Some
+                &&& filter_map_iter(result) == iter
+                &&& filter_map_fun(result) == f
+            }
+        },
+;
+
+impl<B, I: Iterator, F> IteratorSpecImpl for FilterMap<I, F>
+    where
+        I: IteratorSpec,
+        F: FnMut(I::Item) -> Option<B>,
+{
+    open spec fn obeys_prophetic_iter_laws(&self) -> bool {
+        filter_map_iter(*self).obeys_prophetic_iter_laws()
+    }
+
+    #[verifier::prophetic]
+    uninterp spec fn remaining(&self) -> Seq<B>;
+
+    #[verifier::prophetic]
+    uninterp spec fn will_return_none(&self) -> bool;
+
+    uninterp spec fn decrease(&self) -> Option<nat>;
+
+    open spec fn peek(&self, index: int) -> Option<B> {
+        None
+    }
+}
+
+/********************************************************************************
  * Defines a convenient wrapper type that bundles state and invariants needed
  * for ergonomic for-loop support.
  ********************************************************************************/
@@ -510,6 +613,7 @@ pub trait ExIterStep: Clone + PartialOrd + Sized {
 
 pub broadcast group group_iter_axioms {
     rev_postcondition,
+    filter_map_postcondition,
 }
 
 } // verus!

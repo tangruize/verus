@@ -319,6 +319,85 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] filter_map_works verus_code! {
+        use vstd::prelude::*;
+        use vstd::std_specs::iter::{IteratorSpec, filter_map_outputs, type_identity};
+
+        fn even_tens(value: u32) -> (result: Option<u32>)
+            requires
+                value <= 4,
+            ensures
+                result is Some <==> value % 2 == 0,
+                result is Some ==> result->Some_0 == value * 10,
+        {
+            if value % 2 == 0 {
+                Some(value * 10u32)
+            } else {
+                None
+            }
+        }
+
+        fn test() {
+            let values: Vec<u32> = vec![1, 2, 3, 4];
+            let input = values.into_iter();
+            let ghost input_snapshot = input;
+            let mut iter = input.filter_map(even_tens);
+            proof {
+                vstd::std_specs::iter::filter_map_postcondition::<_, _, u32>(
+                    input_snapshot,
+                    even_tens,
+                    iter,
+                );
+            }
+            let ghost outputs = filter_map_outputs::<_, _, u32>(iter, type_identity::<u32>());
+
+            assert(iter.will_return_none() ==> outputs.len() == 4);
+            assert(outputs.len() > 0 ==> outputs[0] is None);
+            assert(outputs.len() > 1 ==> outputs[1] == Some(20u32));
+            assert(outputs.len() > 2 ==> outputs[2] is None);
+            assert(outputs.len() > 3 ==> outputs[3] == Some(40u32));
+            assert(iter.will_return_none() ==> iter.remaining() == seq![20u32, 40]) by {
+                reveal_with_fuel(Seq::filter_map, 5);
+            }
+            let ghost remaining = iter.remaining();
+            assert(remaining.len() > 0 ==> remaining[0] == 20u32) by {
+                reveal_with_fuel(Seq::filter_map, 5);
+            }
+            assert(remaining.len() > 1 ==> remaining[1] == 40u32) by {
+                reveal_with_fuel(Seq::filter_map, 5);
+            }
+
+            let first = iter.next();
+            if first.is_some() {
+                assert(first == Some(20u32));
+                let second = iter.next();
+                if second.is_some() {
+                    assert(second == Some(40u32));
+                }
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] filter_map_checks_closure_preconditions verus_code! {
+        use vstd::prelude::*;
+
+        fn only_small(value: u32) -> Option<u32>
+            requires
+                value < 4,
+        {
+            Some(value)
+        }
+
+        fn test() {
+            let values: Vec<u32> = vec![1, 2, 3, 4];
+            let _ = values.into_iter().filter_map(only_small); // FAILS
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
     #[test] map_can_be_implemented verus_code! {
         use vstd::prelude::*;
         use vstd::std_specs::iter::*;
