@@ -9,6 +9,6 @@ vstd = { path = "../../../../../vstd", default-features = false, features = ["al
 [package.metadata.verus]
 verify = true
 test_command = "focus"
-test_args = "--verify-only-module focused --verify-function S::target --no-verify"
+test_args = "--verify-only-module focused --verify-function S::target"
 
 [workspace]
