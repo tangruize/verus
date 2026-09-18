@@ -62,11 +62,16 @@ fn run_cargo_verus_for_dir(dir: &str) {
     // Use a temp dir for the target dir to isolate each test run
     let target_dir = tempdir().expect("Failed to create temporary target directory");
 
-    let mut args = vec!["verify"];
+    let test_command = find_verus_config(&toml_table, "test_command").unwrap_or("verify");
+    let mut args = vec![test_command];
     args.push("--");
     args.extend(&extra_verus_args);
     let run = run_cargo_verus_with_target(&args, &test_dir, target_dir.path());
     assert!(run.status.success());
+
+    if test_command == "focus" {
+        return;
+    }
 
     let mut args = vec!["build"];
     args.push("--");

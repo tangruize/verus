@@ -1,0 +1,14 @@
+[package]
+name = "async_function_filter"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vstd = { path = "../../../../../vstd", default-features = false, features = ["alloc"] }
+
+[package.metadata.verus]
+verify = true
+test_command = "focus"
+test_args = "--verify-only-module focused --verify-function S::target --no-verify"
+
+[workspace]

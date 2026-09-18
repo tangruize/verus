@@ -914,6 +914,8 @@ pub fn prune_krate_for_module_or_krate(
 
     let mut root_modules: HashSet<Path> = HashSet::new();
     let mut root_functions: HashSet<Fun> = HashSet::new();
+    let function_names: HashSet<Fun> =
+        krate.functions.iter().map(|function| function.x.name.clone()).collect();
     if let Some(module) = &module {
         root_modules.insert(module.clone());
         if let Some(fun) = fun {
@@ -1071,23 +1073,23 @@ pub fn prune_krate_for_module_or_krate(
 
                 // an async function, we need to include async related functions
                 if f.x.attrs.is_async {
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "view"),
-                    );
-
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "awaited"),
-                    );
-
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "exec_await"),
-                    );
+                    for helper in [
+                        crate::fun!(
+                            CrateId::Vstd => "future", "FutureAdditionalSpecFns", "view"
+                        ),
+                        crate::fun!(
+                            CrateId::Vstd => "future", "FutureAdditionalSpecFns", "awaited"
+                        ),
+                        crate::fun!(CrateId::Vstd => "future", "exec_await"),
+                    ] {
+                        if function_names.contains(&helper) {
+                            reach(
+                                &mut state.reached_functions,
+                                &mut state.worklist_functions,
+                                &helper,
+                            );
+                        }
+                    }
                 }
             }
             continue;
