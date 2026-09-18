@@ -339,6 +339,34 @@ impl VisitMut for ExecReplacer {
         let span = for_loop.span();
         add_verus_spec_if_needed(&mut for_loop.attrs, span);
     }
+
+    fn visit_expr_closure_mut(&mut self, closure: &mut syn::ExprClosure) {
+        syn::visit_mut::visit_expr_closure_mut(self, closure);
+
+        if !self.erase.keep() || self.inside_external_code {
+            return;
+        }
+
+        // Normalize an expression-bodied closure `|..| EXPR` to a block-bodied
+        // closure `|..| { EXPR }`, matching what the `verus! {}` path does in
+        // `syntax::Visitor::handle_closures`. Without this, a closure whose body
+        // is a mutable reborrow such as `|c| &mut *c` trips a spurious
+        // "used binding isn't initialized" borrow-check error under the
+        // attribute form. The block body alone avoids it.
+        if !matches!(&*closure.body, syn::Expr::Block(_)) {
+            let span = closure.body.span();
+            let body =
+                std::mem::replace(&mut *closure.body, syn::Expr::Verbatim(TokenStream::new()));
+            *closure.body = syn::Expr::Block(syn::ExprBlock {
+                attrs: vec![],
+                label: None,
+                block: syn::Block {
+                    brace_token: syn::token::Brace(span),
+                    stmts: vec![syn::Stmt::Expr(body, None)],
+                },
+            });
+        }
+    }
 }
 
 /// Check for misuse of `#[verus_spec]` and `#[verus_verify]`.
@@ -801,13 +829,16 @@ pub(crate) fn rewrite_verus_spec_on_fun_or_loop(
                 fun = proxy; // Add proof and spec on proxy func.
             }
 
+            // Parse and replace proof_xxx!() inside function and replace panic.
+            // Do this before injecting the generated requires/ensures statements so
+            // the exec rewriter only touches the user's exec body, not generated
+            // spec code (matching how the closure branch above is handled).
+            let inside_external_code = has_external_code_syn(&fun.attrs);
+            replace_block(erase, fun.block_mut().unwrap(), inside_external_code);
+
             // Add the spec/proof (requires/ensures) to the function body.
             let new_stmts = spec_stmts.into_iter().map(|s| parse2(quote! { #s }).unwrap());
             let _ = fun.block_mut().unwrap().stmts.splice(0..0, new_stmts);
-
-            // Parse and replace proof_xxx!() inside function and replace panic.
-            let inside_external_code = has_external_code_syn(&fun.attrs);
-            replace_block(erase, fun.block_mut().unwrap(), inside_external_code);
             fun.to_tokens(&mut new_stream);
             proc_macro::TokenStream::from(new_stream)
         }
