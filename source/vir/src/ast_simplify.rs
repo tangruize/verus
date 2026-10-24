@@ -1241,6 +1241,11 @@ fn exec_owned_closure_spec(
         ),
     );
     let mut facts = vec![mk_eq(span, closure_var, &construction)];
+    for (index, capture) in captures.iter().enumerate() {
+        // Expose the constructor projection even when the closure is never called.
+        let field = owned_capture_field(span, closure_var, &capture.a.typ, index);
+        facts.push(mk_eq(span, &field, &capture.a));
+    }
 
     // The body was checked for arbitrary captured scalar values, not only the
     // values used by this construction. No unchanged-environment fact is emitted.

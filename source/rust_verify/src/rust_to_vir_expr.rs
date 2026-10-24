@@ -4135,19 +4135,26 @@ pub(crate) fn record_ignore_dummy_capture_operation<'tcx>(
     crate::fn_call_to_vir::record_call(bctx, expr, ResolvedCall::MiscEraseAbsolutely);
 }
 
-fn owned_scalar_captures<'tcx>(
+struct ScalarCapture {
+    original: VarIdent,
+    field: VarBinder<vir::ast::Expr>,
+    borrowed: bool,
+}
+
+fn scalar_captures<'tcx>(
     bctx: &BodyCtxt<'tcx>,
     expr: &Expr<'tcx>,
-) -> Result<Vec<(VarIdent, VarBinder<vir::ast::Expr>)>, VirErr> {
+) -> Result<(Vec<ScalarCapture>, Vec<vir::ast::Stmt>), VirErr> {
     use rustc_middle::hir::place::PlaceBase;
-    use rustc_middle::ty::{ClosureKind, UpvarCapture};
+    use rustc_middle::ty::{BorrowKind, ClosureKind, UpvarCapture};
 
     let node_type = bctx.types.node_type(expr.hir_id);
     let TyKind::Closure(def_id, args) = node_type.kind() else { unreachable!() };
     if args.as_closure().kind() != ClosureKind::FnMut {
-        return Ok(vec![]);
+        return Ok((vec![], vec![]));
     }
     let mut captures = Vec::new();
+    let mut constructors = Vec::new();
     for (index, capture) in bctx.ctxt.tcx.closure_captures(def_id.expect_local()).iter().enumerate()
     {
         if capture.place.projections.is_empty()
@@ -4158,25 +4165,69 @@ fn owned_scalar_captures<'tcx>(
             // The existing erasure pass removes this macro-inserted lifetime marker.
             continue;
         }
-        if capture.info.capture_kind != UpvarCapture::ByValue
-            || !capture.place.projections.is_empty()
+        let borrowed = match capture.info.capture_kind {
+            UpvarCapture::ByValue => false,
+            UpvarCapture::ByRef(BorrowKind::Mutable) => true,
+            _ => return Ok((vec![], vec![])),
+        };
+        if !capture.place.projections.is_empty()
             || !matches!(
                 capture.place.base_ty.kind(),
                 TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_)
             )
         {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         }
-        let PlaceBase::Upvar(upvar) = capture.place.base else { return Ok(vec![]) };
+        let PlaceBase::Upvar(upvar) = capture.place.base else { return Ok((vec![], vec![])) };
         let Node::Pat(pattern) = bctx.ctxt.tcx.hir_node(upvar.var_path.hir_id) else {
-            return Ok(vec![]);
+            return Ok((vec![], vec![]));
         };
         let original = pat_to_var(pattern)?;
-        let typ = bctx.mid_ty_to_vir(expr.span, &capture.place.base_ty)?;
+        let mut typ = bctx.mid_ty_to_vir(expr.span, &capture.place.base_ty)?;
         let place = bctx.spanned_typed_new(expr.span, &typ, PlaceX::Local(original.clone()));
         bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, place.span.id));
+        let place = if borrowed {
+            typ = Arc::new(TypX::MutRef(typ));
+            let borrow = bctx.spanned_typed_new(expr.span, &typ, ExprX::BorrowMut(place));
+            let input = str_unique_var(
+                &format!("capture_input_{}_{}", def_id.index.as_usize(), index),
+                vir::ast::VarIdentDisambiguate::VirTemp(0),
+            );
+            let pattern = bctx.spanned_typed_new(
+                expr.span,
+                &typ,
+                PatternX::Var(vir::ast::PatternBinding {
+                    name: input.clone(),
+                    user_mut: Some(false),
+                    by_ref: vir::ast::ByRef::No,
+                    typ: typ.clone(),
+                    copy: false,
+                }),
+            );
+            let init = bctx.spanned_typed_new(expr.span, &typ, PlaceX::Temporary(borrow));
+            bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, init.span.id));
+            constructors.push(bctx.spanned_new(
+                expr.span,
+                StmtX::Decl {
+                    pattern,
+                    mode: Some((Mode::Exec, vir::ast::DeclProph::Default)),
+                    init: Some(init),
+                    els: None,
+                    assert_irrefutable: false,
+                },
+            ));
+            let place = bctx.spanned_typed_new(expr.span, &typ, PlaceX::Local(input));
+            bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, place.span.id));
+            place
+        } else {
+            place
+        };
         let read = UnfinalizedReadKind {
-            preliminary_kind: vir::ast::ReadKind::Copy,
+            preliminary_kind: if borrowed {
+                vir::ast::ReadKind::Move
+            } else {
+                vir::ast::ReadKind::Copy
+            },
             id: bctx.ctxt.unique_read_kind_id(),
         };
         let value = bctx.spanned_typed_new(expr.span, &typ, ExprX::ReadPlace(place, read));
@@ -4184,9 +4235,14 @@ fn owned_scalar_captures<'tcx>(
             &format!("owned_capture_{}_{}", def_id.index.as_usize(), index),
             vir::ast::VarIdentDisambiguate::VirTemp(0),
         );
-        captures.push((original, Arc::new(VarBinderX { name, a: value })));
+        captures.push(ScalarCapture {
+            original,
+            field: Arc::new(VarBinderX { name, a: value }),
+            borrowed,
+        });
     }
-    Ok(captures)
+    let constructors = bctx.ctxt.clone_stmts_with_fresh_ids(&constructors);
+    Ok((captures, (*constructors).clone()))
 }
 
 pub(crate) fn closure_to_vir<'tcx>(
@@ -4227,10 +4283,10 @@ pub(crate) fn closure_to_vir<'tcx>(
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let captures = if is_spec_fn || proof_fn_modes.is_some() {
-            vec![]
+        let (captures, constructors) = if is_spec_fn || proof_fn_modes.is_some() {
+            (vec![], vec![])
         } else {
-            owned_scalar_captures(bctx, closure_expr)?
+            scalar_captures(bctx, closure_expr)?
         };
 
         let body_bctx = if is_spec_fn {
@@ -4238,13 +4294,13 @@ pub(crate) fn closure_to_vir<'tcx>(
         } else {
             let mut all_params = (*bctx.params).clone();
             let mut closure_params: Vec<_> = params.iter().map(|p| p.name.clone()).collect();
-            closure_params.extend(captures.iter().map(|(original, _)| original.clone()));
+            closure_params.extend(captures.iter().map(|capture| capture.original.clone()));
             all_params.push(closure_params);
             let bctx = bctx.set_header_setting(HeaderSetting::Fn);
             &BodyCtxt {
                 params: std::rc::Rc::new(all_params),
                 owned_closure_captures: std::rc::Rc::new(
-                    captures.iter().map(|(original, _)| original.clone()).collect(),
+                    captures.iter().map(|capture| capture.original.clone()).collect(),
                 ),
                 ..bctx
             }
@@ -4256,32 +4312,59 @@ pub(crate) fn closure_to_vir<'tcx>(
         assert!(ensure.1.len() == 0);
 
         if !captures.is_empty() {
-            let names: std::collections::HashMap<_, _> = captures
-                .iter()
-                .map(|(original, capture)| (original.clone(), capture.name.clone()))
-                .collect();
+            let names: std::collections::HashMap<_, _> =
+                captures.iter().map(|capture| (capture.original.clone(), capture)).collect();
             let rename_capture = |expression: &vir::ast::Expr| {
                 vir::ast_visitor::map_expr_place_visitor(
                     expression,
                     &|e| {
-                        let x = match &e.x {
+                        let (capture, x) = match &e.x {
                             ExprX::Var(name) if names.contains_key(name) => {
-                                ExprX::Var(names[name].clone())
+                                (names[name], ExprX::Var(names[name].field.name.clone()))
                             }
                             ExprX::VarAt(name, at) if names.contains_key(name) => {
-                                ExprX::VarAt(names[name].clone(), *at)
+                                (names[name], ExprX::VarAt(names[name].field.name.clone(), *at))
                             }
                             _ => return Ok(e.clone()),
+                        };
+                        let x = if capture.borrowed {
+                            let inner =
+                                bctx.ctxt.spanned_typed_new_vir(&e.span, &capture.field.a.typ, x);
+                            bctx.ctxt
+                                .erasure_info
+                                .borrow_mut()
+                                .hir_vir_ids
+                                .push((None, inner.span.id));
+                            ExprX::Unary(UnaryOp::MutRefCurrent, inner)
+                        } else {
+                            x
                         };
                         Ok(SpannedTyped::new(&e.span, &e.typ, x))
                     },
                     &|p| {
                         if let PlaceX::Local(name) = &p.x {
-                            if let Some(name) = names.get(name) {
+                            if let Some(capture) = names.get(name) {
+                                if capture.borrowed {
+                                    let inner = bctx.ctxt.spanned_typed_new_vir(
+                                        &p.span,
+                                        &capture.field.a.typ,
+                                        PlaceX::Local(capture.field.name.clone()),
+                                    );
+                                    bctx.ctxt
+                                        .erasure_info
+                                        .borrow_mut()
+                                        .hir_vir_ids
+                                        .push((None, inner.span.id));
+                                    return Ok(SpannedTyped::new(
+                                        &p.span,
+                                        &p.typ,
+                                        PlaceX::DerefMut(inner),
+                                    ));
+                                }
                                 return Ok(SpannedTyped::new(
                                     &p.span,
                                     &p.typ,
-                                    PlaceX::Local(name.clone()),
+                                    PlaceX::Local(capture.field.name.clone()),
                                 ));
                             }
                         }
@@ -4292,6 +4375,37 @@ pub(crate) fn closure_to_vir<'tcx>(
             body = rename_capture(&body)?;
             require = Arc::new(require.iter().map(&rename_capture).collect::<Result<_, _>>()?);
             ensure.0 = Arc::new(ensure.0.iter().map(&rename_capture).collect::<Result<_, _>>()?);
+        }
+
+        for capture in captures.iter().filter(|capture| capture.borrowed) {
+            let TypX::MutRef(typ) = &*capture.field.a.typ else { unreachable!() };
+            let span = bctx.ctxt.spans.to_air_span(closure_expr.span);
+            bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, span.id));
+            let before = SpannedTyped::new(
+                &span,
+                &capture.field.a.typ,
+                ExprX::VarAt(capture.field.name.clone(), vir::ast::VarAt::Pre),
+            );
+            let after = SpannedTyped::new(
+                &span,
+                &capture.field.a.typ,
+                ExprX::Var(capture.field.name.clone()),
+            );
+            let future = |value| {
+                SpannedTyped::new(
+                    &span,
+                    typ,
+                    ExprX::Unary(
+                        UnaryOp::MutRefFuture(vir::ast::MutRefFutureSourceName::MutRefFuture),
+                        value,
+                    ),
+                )
+            };
+            Arc::make_mut(&mut ensure.0).push(vir::ast_util::mk_eq(
+                &span,
+                &future(before),
+                &future(after),
+            ));
         }
 
         if !pattern_stmts.is_empty() {
@@ -4381,7 +4495,7 @@ pub(crate) fn closure_to_vir<'tcx>(
 
             ExprX::NonSpecClosure {
                 params: Arc::new(params),
-                captures: Arc::new(captures.into_iter().map(|(_, capture)| capture).collect()),
+                captures: Arc::new(captures.into_iter().map(|capture| capture.field).collect()),
                 proof_fn_modes,
                 body,
                 requires: require,
@@ -4390,7 +4504,16 @@ pub(crate) fn closure_to_vir<'tcx>(
                 external_spec: None, // filled in by ast_simplify
             }
         };
-        Ok(bctx.spanned_typed_new(closure_expr.span, &closure_vir_typ, exprx))
+        let closure = bctx.spanned_typed_new(closure_expr.span, &closure_vir_typ, exprx);
+        if constructors.is_empty() {
+            Ok(closure)
+        } else {
+            Ok(bctx.spanned_typed_new(
+                closure_expr.span,
+                &closure_vir_typ,
+                ExprX::Block(Arc::new(constructors), Some(closure)),
+            ))
+        }
     } else {
         panic!("closure_to_vir expects ExprKind::Closure");
     }

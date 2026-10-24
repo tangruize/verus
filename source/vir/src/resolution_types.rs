@@ -97,9 +97,10 @@ fn typ_node_resolvability(t: &Typ) -> NodeResolve {
         | TypX::ConstBool(..)
         | TypX::Air(..) => NodeResolve::No,
 
-        TypX::AnonymousClosure(..) | TypX::Datatype(Dt::Tuple(_), ..) | TypX::Boxed(..) => {
-            NodeResolve::TypArgDependent
-        }
+        TypX::Datatype(Dt::Tuple(_), ..) | TypX::Boxed(..) => NodeResolve::TypArgDependent,
+
+        // Before environment elaboration, signature types do not describe captured references.
+        TypX::AnonymousClosure(..) => NodeResolve::Yes,
 
         TypX::Primitive(primitive, _) => match primitive {
             Primitive::Array | Primitive::Slice => NodeResolve::TypArgDependent,

@@ -487,6 +487,7 @@ struct FnScope {
     scope_map: ScopeMap<VarIdent, ()>,
     upvars_mutated: Vec<FlattenedPlace>,
     upvars_moved: Vec<FlattenedPlace>,
+    retained_captures: Vec<FlattenedPlace>,
 }
 
 #[derive(Clone, Debug)]
@@ -579,7 +580,7 @@ fn new_cfg<'a>(
     }
 
     let end_bb = builder.build(body, start_bb);
-    builder.optionally_exit(end_bb);
+    builder.optionally_exit(end_bb, AstPosition::After(body.span.id));
 
     builder.pop_scope();
     builder.pop_fn();
@@ -634,9 +635,13 @@ impl<'a> Builder<'a> {
         self.basic_blocks.len() - 1
     }
 
-    fn optionally_exit(&mut self, bb: Maybe<BBIndex>) {
+    fn optionally_exit(&mut self, bb: Maybe<BBIndex>, position: AstPosition) {
         match bb {
             Maybe::Some(bb) => {
+                let retained = self.fns.last().unwrap().retained_captures.clone();
+                for capture in retained {
+                    self.push_instruction_raw(bb, position, InstructionKind::MoveFrom(capture));
+                }
                 self.basic_blocks[bb].is_exit = true;
             }
             _ => {}
@@ -1096,7 +1101,7 @@ impl<'a> Builder<'a> {
                 if let Some(e) = e_opt {
                     bb = unwrap!(self.build(e, bb));
                 }
-                self.basic_blocks[bb].is_exit = true;
+                self.optionally_exit(Maybe::Some(bb), AstPosition::After(span_id));
                 Maybe::Never
             }
             ExprX::BreakOrContinue { label, is_break } => {
@@ -1822,6 +1827,9 @@ impl<'a> Builder<'a> {
                 projections: vec![],
             };
             let local_place = self.locals.add_place(&local);
+            if matches!(&*capture.a.typ, TypX::MutRef(_)) {
+                self.fns.last_mut().unwrap().retained_captures.push(local_place.clone());
+            }
             self.push_instruction_raw(
                 closure_prologue,
                 AstPosition::Before(body.span.id),
@@ -1853,7 +1861,7 @@ impl<'a> Builder<'a> {
         }
 
         let closure_normal_ret_bb = self.build(body, closure_start_bb);
-        self.optionally_exit(closure_normal_ret_bb);
+        self.optionally_exit(closure_normal_ret_bb, AstPosition::After(body.span.id));
 
         self.pop_scope();
         let mut fn_scope = self.pop_fn();
@@ -1886,6 +1894,7 @@ impl<'a> Builder<'a> {
             scope_map: ScopeMap::new(),
             upvars_mutated: vec![],
             upvars_moved: vec![],
+            retained_captures: vec![],
         });
     }
 
