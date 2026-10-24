@@ -1042,10 +1042,58 @@ fn exec_closure_spec(
     if ensures.len() > 0 {
         let ens_forall =
             exec_closure_spec_ensures(state, span, closure_var, params, ret, ensures, false)?;
-        Ok(conjoin(span, &vec![req_forall, ens_forall]))
+        let mut specs = vec![req_forall, ens_forall];
+        let borrowed_call_supported = match &*undecorate_typ(&closure_var.typ) {
+            TypX::Datatype(Dt::Path(path), _, _) => state.closure_typs.values().any(|closure| {
+                &closure.path == path
+                    && matches!(closure.kind, ClosureKind::Fn | ClosureKind::FnMut)
+            }),
+            _ => false,
+        };
+        if borrowed_call_supported {
+            specs.push(exec_closure_borrowed_spec_ensures(
+                state, span, closure_var, params, ret, ensures,
+            )?);
+        }
+        Ok(conjoin(span, &specs))
     } else {
         Ok(req_forall)
     }
+}
+
+fn exec_closure_borrowed_spec_ensures(
+    state: &mut State,
+    span: &Span,
+    closure_var: &Expr,
+    params: &VarBinders<Typ>,
+    ret: &VarBinder<Typ>,
+    ensures: &Exprs,
+) -> Result<Expr, VirErr> {
+    let call_ident = state.next_temp();
+    let call_typ = Arc::new(TypX::MutRef(closure_var.typ.clone()));
+    let call = SpannedTyped::new(span, &call_typ, ExprX::Var(call_ident.clone()));
+    let borrowed_ens =
+        exec_closure_spec_ensures(state, span, &call, params, ret, ensures, false)?;
+    let ExprX::Quant(quant, binders, body) = &borrowed_ens.x else {
+        unreachable!("closure ensures is quantified");
+    };
+    let current = SpannedTyped::new(
+        span,
+        &closure_var.typ,
+        ExprX::Unary(UnaryOp::MutRefCurrent, call),
+    );
+    let mut borrowed_binders = vec![Arc::new(VarBinderX { name: call_ident, a: call_typ })];
+    borrowed_binders.extend(binders.iter().cloned());
+
+    // Rust calls Fn/FnMut closures through &mut Closure using the same checked body.
+    // Retain the actual borrowing-call descriptor and its argument poststates;
+    // no equality between the closure's pre- and post-call states is asserted.
+    let guarded_body = mk_implies(span, &mk_eq(span, &current, closure_var), body);
+    Ok(SpannedTyped::new(
+        span,
+        &borrowed_ens.typ,
+        ExprX::Quant(quant.clone(), Arc::new(borrowed_binders), guarded_body),
+    ))
 }
 
 pub(crate) fn need_fndef_axiom(fndef_typs: &HashSet<Fun>, f: &Function) -> bool {
