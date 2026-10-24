@@ -4135,16 +4135,16 @@ pub(crate) fn record_ignore_dummy_capture_operation<'tcx>(
     crate::fn_call_to_vir::record_call(bctx, expr, ResolvedCall::MiscEraseAbsolutely);
 }
 
-struct ScalarCapture {
+struct DirectCapture {
     original: VarIdent,
     field: VarBinder<vir::ast::Expr>,
     borrowed: bool,
 }
 
-fn scalar_captures<'tcx>(
+fn direct_captures<'tcx>(
     bctx: &BodyCtxt<'tcx>,
     expr: &Expr<'tcx>,
-) -> Result<(Vec<ScalarCapture>, Vec<vir::ast::Stmt>), VirErr> {
+) -> Result<(Vec<DirectCapture>, Vec<vir::ast::Stmt>), VirErr> {
     use rustc_middle::hir::place::PlaceBase;
     use rustc_middle::ty::{BorrowKind, ClosureKind, UpvarCapture};
 
@@ -4171,10 +4171,11 @@ fn scalar_captures<'tcx>(
             _ => return Ok((vec![], vec![])),
         };
         if !capture.place.projections.is_empty()
-            || !matches!(
-                capture.place.base_ty.kind(),
-                TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_)
-            )
+            || (!borrowed
+                && !matches!(
+                    capture.place.base_ty.kind(),
+                    TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_)
+                ))
         {
             return Ok((vec![], vec![]));
         }
@@ -4235,7 +4236,7 @@ fn scalar_captures<'tcx>(
             &format!("owned_capture_{}_{}", def_id.index.as_usize(), index),
             vir::ast::VarIdentDisambiguate::VirTemp(0),
         );
-        captures.push(ScalarCapture {
+        captures.push(DirectCapture {
             original,
             field: Arc::new(VarBinderX { name, a: value }),
             borrowed,
@@ -4286,7 +4287,7 @@ pub(crate) fn closure_to_vir<'tcx>(
         let (captures, constructors) = if is_spec_fn || proof_fn_modes.is_some() {
             (vec![], vec![])
         } else {
-            scalar_captures(bctx, closure_expr)?
+            direct_captures(bctx, closure_expr)?
         };
 
         let body_bctx = if is_spec_fn {
