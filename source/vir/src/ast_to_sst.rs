@@ -2106,6 +2106,7 @@ pub(crate) fn expr_to_stm_opt(
         }
         ExprX::NonSpecClosure {
             params,
+            captures,
             proof_fn_modes: _,
             body,
             requires,
@@ -2119,7 +2120,7 @@ pub(crate) fn expr_to_stm_opt(
             // This includes assuming the requires, asserting the ensures, everything else
 
             let (inner_stms, typ_inv_vars) =
-                exec_closure_body_stms(ctx, state, params, ret, body, requires, ensures)?;
+                exec_closure_body_stms(ctx, state, params, captures, ret, body, requires, ensures)?;
             let block = Spanned::new(expr.span.clone(), StmX::Block(Arc::new(inner_stms)));
             let clos =
                 Spanned::new(expr.span.clone(), StmX::ClosureInner { body: block, typ_inv_vars });
@@ -4506,6 +4507,7 @@ fn exec_closure_body_stms(
     ctx: &Ctx,
     state: &mut State,
     params: &VarBinders<Typ>,
+    captures: &VarBinders<Expr>,
     ret: &VarBinder<Typ>,
     body: &Expr,
     requires: &Exprs,
@@ -4521,6 +4523,12 @@ fn exec_closure_body_stms(
     std::mem::swap(&mut state.mask, &mut mask);
 
     let mut param_set = HashSet::<VarIdent>::new();
+
+    for capture in captures.iter() {
+        let kind = PreLocalDeclKind::ExecClosureParam;
+        let uid = state.declare_var_stm(&capture.name, &capture.a.typ, kind, false);
+        typ_inv_vars.push((uid.clone(), capture.a.typ.clone()));
+    }
 
     for param in params.iter() {
         let kind = PreLocalDeclKind::ExecClosureParam;

@@ -355,6 +355,7 @@ fn mk_bctx<'tcx>(
         in_old: false,
         in_explicit_prophecy_node: false,
         params: std::rc::Rc::new(vec![param_names]),
+        owned_closure_captures: std::rc::Rc::new(vec![]),
         header_setting: HeaderSetting::Fn,
         external_opaque_type_map,
         label_map: std::rc::Rc::new(std::cell::RefCell::new((HashMap::new(), 0))),

@@ -85,6 +85,7 @@ pub(crate) struct BodyCtxt<'tcx> {
     pub(crate) in_explicit_prophecy_node: bool,
     /// params for the enclosing function and all enclosing non-spec-closures
     pub(crate) params: Rc<Vec<Vec<vir::ast::VarIdent>>>,
+    pub(crate) owned_closure_captures: Rc<Vec<vir::ast::VarIdent>>,
     /// Assume specification defines a new opaque type for each opaque type in the external function.
     /// We use this map to resolve them later.
     pub(crate) external_opaque_type_map: Option<HashMap<Path, Path>>,

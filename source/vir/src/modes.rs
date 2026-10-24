@@ -2302,6 +2302,7 @@ fn check_expr(
         }
         ExprX::NonSpecClosure {
             params,
+            captures,
             proof_fn_modes,
             ret,
             requires,
@@ -2328,7 +2329,21 @@ fn check_expr(
             if is_proof && (typing.block_ghostness == Ghost::Exec || outer_mode != Mode::Proof) {
                 return Err(error(&expr.span, "proof closure can only appear in proof mode"));
             }
+            for capture in captures.iter() {
+                check_expr_has_mode(
+                    ctxt,
+                    record,
+                    typing,
+                    Mode::Exec,
+                    &capture.a,
+                    Mode::Exec,
+                    &Proph::No,
+                )?;
+            }
             let mut typing = typing.push_var_scope();
+            for capture in captures.iter() {
+                typing.insert(&capture.name, Mode::Exec, Some(ProphVar::No));
+            }
             assert!(param_modes.len() == params.len());
             for (param_mode, binder) in param_modes.iter().zip(params.iter()) {
                 typing.insert(&binder.name, *param_mode, Some(ProphVar::No));

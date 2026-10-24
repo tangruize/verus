@@ -1123,6 +1123,8 @@ pub enum ExprX {
     /// Executable closure
     NonSpecClosure {
         params: VarBinders<Typ>,
+        /// Owned scalar environment fields, with fresh body names and construction values.
+        captures: VarBinders<Expr>,
         /// If this is a proof_fn, record the args/ret modes; otherwise, None
         proof_fn_modes: Option<(Arc<Vec<Mode>>, Mode)>,
         body: Expr,

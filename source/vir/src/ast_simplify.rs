@@ -42,6 +42,7 @@ struct ClosureDatatype {
     output: Typ,
     kind: ClosureKind,
     path: Path,
+    captures: Typs,
 }
 
 struct State {
@@ -100,6 +101,7 @@ impl State {
             output: typ,
             kind: kind,
             path: crate::def::prefix_closure_type(id),
+            captures: Arc::new(vec![]),
         });
         assert!(&e.enclosing_fun == &fun);
         e.path.clone()
@@ -645,6 +647,7 @@ fn simplify_one_expr(
         ExprX::Ghost { alloc_wrapper: _, tracked: _, expr: expr1 } => Ok(expr1.clone()),
         ExprX::NonSpecClosure {
             params,
+            captures,
             proof_fn_modes,
             body,
             requires,
@@ -661,8 +664,20 @@ fn simplify_one_expr(
                 ExprX::Var(closure_var_ident.clone()),
             );
 
-            let external_spec_expr =
-                exec_closure_spec(state, &expr.span, &closure_var, params, ret, requires, ensures)?;
+            let external_spec_expr = if captures.is_empty() {
+                exec_closure_spec(state, &expr.span, &closure_var, params, ret, requires, ensures)?
+            } else {
+                exec_owned_closure_spec(
+                    state,
+                    &expr.span,
+                    &closure_var,
+                    params,
+                    captures,
+                    ret,
+                    requires,
+                    ensures,
+                )?
+            };
             let external_spec = Some((closure_var_ident, external_spec_expr));
 
             Ok(SpannedTyped::new(
@@ -670,6 +685,7 @@ fn simplify_one_expr(
                 &expr.typ,
                 ExprX::NonSpecClosure {
                     params: params.clone(),
+                    captures: captures.clone(),
                     proof_fn_modes: proof_fn_modes.clone(),
                     body: body.clone(),
                     requires: requires.clone(),
@@ -1057,7 +1073,13 @@ fn exec_closure_spec(
         && matches!(kind, Some(ClosureKind::Fn | ClosureKind::FnMut | ClosureKind::FrozenFn))
     {
         specs.push(exec_closure_borrowed_spec_ensures(
-            state, span, closure_var, params, ret, ensures, frozen_receiver,
+            state,
+            span,
+            closure_var,
+            params,
+            ret,
+            ensures,
+            frozen_receiver,
         )?);
     }
     Ok(conjoin(span, &specs))
@@ -1110,6 +1132,189 @@ fn exec_closure_borrowed_spec_ensures(
         &borrowed_ens.typ,
         ExprX::Quant(quant.clone(), Arc::new(borrowed_binders), guarded_body),
     ))
+}
+
+fn owned_capture_field(span: &Span, receiver: &Expr, typ: &Typ, index: usize) -> Expr {
+    let TypX::Datatype(datatype, ..) = &*undecorate_typ(&receiver.typ) else {
+        unreachable!("owned closure must have a datatype");
+    };
+    let op = UnaryOpr::Field(FieldOpr {
+        datatype: datatype.clone(),
+        variant: Arc::new("Environment".to_string()),
+        field: positional_field_ident(index),
+        get_variant: false,
+        check: VariantCheck::None,
+    });
+    SpannedTyped::new(span, typ, ExprX::UnaryOpr(op, receiver.clone()))
+}
+
+fn bind_owned_captures(
+    span: &Span,
+    before: &Expr,
+    after: &Expr,
+    captures: &VarBinders<Expr>,
+    expressions: &Exprs,
+) -> Result<Exprs, VirErr> {
+    let fields: HashMap<_, _> = captures
+        .iter()
+        .enumerate()
+        .map(|(index, capture)| {
+            (
+                capture.name.clone(),
+                (
+                    owned_capture_field(span, before, &capture.a.typ, index),
+                    owned_capture_field(span, after, &capture.a.typ, index),
+                ),
+            )
+        })
+        .collect();
+    Ok(Arc::new(
+        expressions
+            .iter()
+            .map(|expression| {
+                crate::ast_visitor::map_expr_place_visitor(
+                    expression,
+                    &|expr| match &expr.x {
+                        ExprX::VarAt(name, crate::ast::VarAt::Pre) if fields.contains_key(name) => {
+                            Ok(fields[name].0.clone())
+                        }
+                        ExprX::Var(name) if fields.contains_key(name) => Ok(fields[name].1.clone()),
+                        _ => Ok(expr.clone()),
+                    },
+                    &|place| {
+                        if let PlaceX::Local(name) = &place.x {
+                            if let Some((_, after)) = fields.get(name) {
+                                return Ok(PlaceX::spec_temporary(after.clone()));
+                            }
+                        }
+                        Ok(place.clone())
+                    },
+                )
+            })
+            .collect::<Result<_, _>>()?,
+    ))
+}
+
+fn quantify_owned_receiver(receiver: &Expr, expression: &Expr) -> Expr {
+    let ExprX::Var(name) = &receiver.x else { unreachable!() };
+    let ExprX::Quant(quant, binders, body) = &expression.x else { unreachable!() };
+    let mut all_binders =
+        vec![Arc::new(VarBinderX { name: name.clone(), a: receiver.typ.clone() })];
+    all_binders.extend(binders.iter().cloned());
+    SpannedTyped::new(
+        &expression.span,
+        &expression.typ,
+        ExprX::Quant(quant.clone(), Arc::new(all_binders), body.clone()),
+    )
+}
+
+fn exec_owned_closure_spec(
+    state: &mut State,
+    span: &Span,
+    closure_var: &Expr,
+    params: &VarBinders<Typ>,
+    captures: &VarBinders<Expr>,
+    ret: &VarBinder<Typ>,
+    requires: &Exprs,
+    ensures: &Exprs,
+) -> Result<Expr, VirErr> {
+    let TypX::Datatype(Dt::Path(path), ..) = &*undecorate_typ(&closure_var.typ) else {
+        unreachable!("owned closure must have a datatype");
+    };
+    let closure = state.closure_typs.values_mut().find(|c| &c.path == path).unwrap();
+    assert!(closure.kind == ClosureKind::FnMut && closure.captures.is_empty());
+    closure.captures = Arc::new(captures.iter().map(|c| c.a.typ.clone()).collect());
+
+    let fields = captures
+        .iter()
+        .enumerate()
+        .map(|(index, capture)| ident_binder(&positional_field_ident(index), &capture.a))
+        .collect();
+    let construction = SpannedTyped::new(
+        span,
+        &closure_var.typ,
+        ExprX::Ctor(
+            Dt::Path(path.clone()),
+            Arc::new("Environment".to_string()),
+            Arc::new(fields),
+            None,
+        ),
+    );
+    let mut facts = vec![mk_eq(span, closure_var, &construction)];
+
+    // The body was checked for arbitrary captured scalar values, not only the
+    // values used by this construction. No unchanged-environment fact is emitted.
+    let receiver = SpannedTyped::new(span, &closure_var.typ, ExprX::Var(state.next_temp()));
+    let reqs = bind_owned_captures(span, &receiver, &receiver, captures, requires)?;
+    let req = exec_closure_spec_requires(state, span, &receiver, params, &reqs)?;
+    facts.push(quantify_owned_receiver(&receiver, &req));
+    if !ensures.is_empty() {
+        let after_name = state.next_temp();
+        let after = SpannedTyped::new(span, &closure_var.typ, ExprX::Var(after_name.clone()));
+        let enss = bind_owned_captures(span, &receiver, &after, captures, ensures)?;
+        let uses_after = enss.iter().any(|expression| {
+            crate::ast_visitor::expr_visitor_check(expression, &mut |_, e| {
+                if matches!(&e.x, ExprX::Var(name) if *name == after_name) {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            })
+            .is_err()
+        });
+        let enss = if uses_after {
+            let trigger = owned_capture_field(span, &after, &captures[0].a.typ, 0);
+            let body = SpannedTyped::new(
+                span,
+                &Arc::new(TypX::Bool),
+                ExprX::WithTriggers {
+                    triggers: Arc::new(vec![Arc::new(vec![trigger])]),
+                    body: conjoin(span, &enss),
+                },
+            );
+            Arc::new(vec![SpannedTyped::new(
+                span,
+                &Arc::new(TypX::Bool),
+                ExprX::Quant(
+                    Quant { quant: air::ast::Quant::Exists },
+                    Arc::new(vec![Arc::new(VarBinderX {
+                        name: after_name,
+                        a: closure_var.typ.clone(),
+                    })]),
+                    body,
+                ),
+            )])
+        } else {
+            enss
+        };
+        let ens = exec_closure_spec_ensures(state, span, &receiver, params, ret, &enss, false)?;
+        facts.push(quantify_owned_receiver(&receiver, &ens));
+    }
+
+    let call_typ = Arc::new(TypX::MutRef(closure_var.typ.clone()));
+    let call = SpannedTyped::new(span, &call_typ, ExprX::Var(state.next_temp()));
+    let current = SpannedTyped::new(
+        span,
+        &closure_var.typ,
+        ExprX::Unary(UnaryOp::MutRefCurrent, call.clone()),
+    );
+    let reqs = bind_owned_captures(span, &current, &current, captures, requires)?;
+    let req = exec_closure_spec_requires(state, span, &call, params, &reqs)?;
+    facts.push(quantify_owned_receiver(&call, &req));
+    if !ensures.is_empty() {
+        let future = SpannedTyped::new(
+            span,
+            &closure_var.typ,
+            ExprX::Unary(
+                UnaryOp::MutRefFuture(crate::ast::MutRefFutureSourceName::MutRefFuture),
+                call.clone(),
+            ),
+        );
+        let enss = bind_owned_captures(span, &current, &future, captures, ensures)?;
+        let ens = exec_closure_spec_ensures(state, span, &call, params, ret, &enss, false)?;
+        facts.push(quantify_owned_receiver(&call, &ens));
+    }
+    Ok(conjoin(span, &facts))
 }
 
 pub(crate) fn need_fndef_axiom(fndef_typs: &HashSet<Fun>, f: &Function) -> bool {
@@ -1618,9 +1823,29 @@ pub fn simplify_krate(ctx: &mut GlobalCtx, krate: &Krate) -> Result<Krate, VirEr
         // to Rust's restrictions, we don't have to do any additional checks.)
 
         let visibility = Visibility { restricted_to: None };
-        let transparency = DatatypeTransparency::Never;
-
-        let variants = Arc::new(vec![]);
+        let (transparency, variants) = if closure.captures.is_empty() {
+            (DatatypeTransparency::Never, Arc::new(vec![]))
+        } else {
+            let fields = closure
+                .captures
+                .iter()
+                .enumerate()
+                .map(|(index, typ)| {
+                    ident_binder(
+                        &positional_field_ident(index),
+                        &(typ.clone(), Mode::Exec, visibility.clone()),
+                    )
+                })
+                .collect();
+            (
+                DatatypeTransparency::WhenVisible(visibility.clone()),
+                Arc::new(vec![Variant {
+                    name: Arc::new("Environment".to_string()),
+                    fields: Arc::new(fields),
+                    ctor_style: CtorPrintStyle::Tuple,
+                }]),
+            )
+        };
 
         let function = functions.iter().find(|f| f.x.name == closure.enclosing_fun).unwrap();
 

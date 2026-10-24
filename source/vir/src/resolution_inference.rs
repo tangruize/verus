@@ -932,6 +932,7 @@ impl<'a> Builder<'a> {
             }
             ExprX::NonSpecClosure {
                 params,
+                captures,
                 proof_fn_modes,
                 body,
                 requires: _,
@@ -939,8 +940,12 @@ impl<'a> Builder<'a> {
                 ret: _,
                 external_spec: _,
             } => {
+                for capture in captures.iter() {
+                    bb = unwrap!(self.build(&capture.a, bb));
+                }
                 // Build the closure interior as a disconnected part of the CFG
-                let fn_scope = self.build_closure(&expr.span, params, proof_fn_modes, body);
+                let fn_scope =
+                    self.build_closure(&expr.span, params, captures, proof_fn_modes, body);
 
                 // Emit instructions in the parent function that correspond to the
                 // construction of the closure.
@@ -1796,6 +1801,7 @@ impl<'a> Builder<'a> {
         &mut self,
         span: &Span,
         params: &VarBinders<Typ>,
+        captures: &VarBinders<Expr>,
         proof_fn_modes: &Option<(Arc<Vec<Mode>>, Mode)>,
         body: &Expr,
     ) -> FnScope {
@@ -1805,6 +1811,23 @@ impl<'a> Builder<'a> {
 
         self.push_fn();
         self.push_scope();
+
+        for capture in captures.iter() {
+            self.scope_insert(&capture.name);
+            let previous = self.locals.var_modes.insert(capture.name.clone(), Mode::Exec);
+            assert!(previous.is_none());
+            let local = FlattenedPlaceTyped {
+                local: LocalName::Named(capture.name.clone()),
+                typ: capture.a.typ.clone(),
+                projections: vec![],
+            };
+            let local_place = self.locals.add_place(&local);
+            self.push_instruction_raw(
+                closure_prologue,
+                AstPosition::Before(body.span.id),
+                InstructionKind::Overwrite(local_place),
+            );
+        }
 
         for (i, param) in params.iter().enumerate() {
             self.scope_insert(&param.name);

@@ -394,6 +394,7 @@ pub(crate) trait AstVisitor<R: Returner, Err, Scope: Scoper> {
             }
             ExprX::NonSpecClosure {
                 params: p,
+                captures: c,
                 proof_fn_modes,
                 body,
                 requires,
@@ -403,8 +404,18 @@ pub(crate) trait AstVisitor<R: Returner, Err, Scope: Scoper> {
             } => {
                 let params = self.visit_binders_typ(p)?;
                 let ret = self.visit_binder_typ(r)?;
+                let captures = R::map_vec(c, &mut |capture| {
+                    let value = self.visit_expr(&capture.a)?;
+                    R::ret(|| Arc::new(VarBinderX { name: capture.name.clone(), a: R::get(value) }))
+                })?;
 
                 self.push_scope();
+                for capture in R::get_vec_or(&captures, c).iter() {
+                    self.insert_binding(
+                        &capture.name,
+                        ScopeEntry::new(&capture.a.typ, Some(true), true),
+                    );
+                }
                 for b in R::get_vec_or(&params, p).iter() {
                     self.insert_binding(&b.name, ScopeEntry::new(&b.a, Some(true), true));
                 }
@@ -431,6 +442,7 @@ pub(crate) trait AstVisitor<R: Returner, Err, Scope: Scoper> {
                 R::ret(|| {
                     expr_new(ExprX::NonSpecClosure {
                         params: R::get_vec_a(params),
+                        captures: R::get_vec_a(captures),
                         proof_fn_modes: proof_fn_modes.clone(),
                         body: R::get(body),
                         requires: R::get_vec_a(requires),

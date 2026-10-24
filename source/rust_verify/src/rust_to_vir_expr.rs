@@ -2911,6 +2911,7 @@ pub(crate) fn expr_to_vir_innermost<'tcx>(
                             // use a normal Var
                             if bctx.is_param_for_fn_or_non_spec_closure(&name) {
                                 if bctx.in_fn_sig
+                                    && !bctx.owned_closure_captures.contains(&name)
                                     && bctx.is_param_for_innermost_fn_or_non_spec_closure(&name)
                                 {
                                     Ok(ExprOrPlace::Place(place))
@@ -4134,6 +4135,60 @@ pub(crate) fn record_ignore_dummy_capture_operation<'tcx>(
     crate::fn_call_to_vir::record_call(bctx, expr, ResolvedCall::MiscEraseAbsolutely);
 }
 
+fn owned_scalar_captures<'tcx>(
+    bctx: &BodyCtxt<'tcx>,
+    expr: &Expr<'tcx>,
+) -> Result<Vec<(VarIdent, VarBinder<vir::ast::Expr>)>, VirErr> {
+    use rustc_middle::hir::place::PlaceBase;
+    use rustc_middle::ty::{ClosureKind, UpvarCapture};
+
+    let node_type = bctx.types.node_type(expr.hir_id);
+    let TyKind::Closure(def_id, args) = node_type.kind() else { unreachable!() };
+    if args.as_closure().kind() != ClosureKind::FnMut {
+        return Ok(vec![]);
+    }
+    let mut captures = Vec::new();
+    for (index, capture) in bctx.ctxt.tcx.closure_captures(def_id.expect_local()).iter().enumerate()
+    {
+        if capture.place.projections.is_empty()
+            && let TyKind::Adt(def, _) = capture.place.base_ty.kind()
+            && bctx.ctxt.get_verus_item(def.did())
+                == Some(&VerusItem::DummyCapture(DummyCaptureItem::Struct))
+        {
+            // The existing erasure pass removes this macro-inserted lifetime marker.
+            continue;
+        }
+        if capture.info.capture_kind != UpvarCapture::ByValue
+            || !capture.place.projections.is_empty()
+            || !matches!(
+                capture.place.base_ty.kind(),
+                TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_)
+            )
+        {
+            return Ok(vec![]);
+        }
+        let PlaceBase::Upvar(upvar) = capture.place.base else { return Ok(vec![]) };
+        let Node::Pat(pattern) = bctx.ctxt.tcx.hir_node(upvar.var_path.hir_id) else {
+            return Ok(vec![]);
+        };
+        let original = pat_to_var(pattern)?;
+        let typ = bctx.mid_ty_to_vir(expr.span, &capture.place.base_ty)?;
+        let place = bctx.spanned_typed_new(expr.span, &typ, PlaceX::Local(original.clone()));
+        bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, place.span.id));
+        let read = UnfinalizedReadKind {
+            preliminary_kind: vir::ast::ReadKind::Copy,
+            id: bctx.ctxt.unique_read_kind_id(),
+        };
+        let value = bctx.spanned_typed_new(expr.span, &typ, ExprX::ReadPlace(place, read));
+        let name = str_unique_var(
+            &format!("owned_capture_{}_{}", def_id.index.as_usize(), index),
+            vir::ast::VarIdentDisambiguate::VirTemp(0),
+        );
+        captures.push((original, Arc::new(VarBinderX { name, a: value })));
+    }
+    Ok(captures)
+}
+
 pub(crate) fn closure_to_vir<'tcx>(
     bctx: &BodyCtxt<'tcx>,
     closure_expr: &Expr<'tcx>,
@@ -4172,20 +4227,72 @@ pub(crate) fn closure_to_vir<'tcx>(
             })
             .collect::<Result<Vec<_>, _>>()?;
 
+        let captures = if is_spec_fn || proof_fn_modes.is_some() {
+            vec![]
+        } else {
+            owned_scalar_captures(bctx, closure_expr)?
+        };
+
         let body_bctx = if is_spec_fn {
             bctx
         } else {
             let mut all_params = (*bctx.params).clone();
-            all_params.push(params.iter().map(|p| p.name.clone()).collect());
+            let mut closure_params: Vec<_> = params.iter().map(|p| p.name.clone()).collect();
+            closure_params.extend(captures.iter().map(|(original, _)| original.clone()));
+            all_params.push(closure_params);
             let bctx = bctx.set_header_setting(HeaderSetting::Fn);
-            &BodyCtxt { params: std::rc::Rc::new(all_params), ..bctx }
+            &BodyCtxt {
+                params: std::rc::Rc::new(all_params),
+                owned_closure_captures: std::rc::Rc::new(
+                    captures.iter().map(|(original, _)| original.clone()).collect(),
+                ),
+                ..bctx
+            }
         };
 
         let mut body = expr_to_vir_consume(body_bctx, &body.value)?;
-
         let header = vir::headers::read_header(&mut body, &vir::headers::HeaderAllows::Closure)?;
         let vir::headers::Header { mut require, mut ensure, ensure_id_typ, .. } = header;
         assert!(ensure.1.len() == 0);
+
+        if !captures.is_empty() {
+            let names: std::collections::HashMap<_, _> = captures
+                .iter()
+                .map(|(original, capture)| (original.clone(), capture.name.clone()))
+                .collect();
+            let rename_capture = |expression: &vir::ast::Expr| {
+                vir::ast_visitor::map_expr_place_visitor(
+                    expression,
+                    &|e| {
+                        let x = match &e.x {
+                            ExprX::Var(name) if names.contains_key(name) => {
+                                ExprX::Var(names[name].clone())
+                            }
+                            ExprX::VarAt(name, at) if names.contains_key(name) => {
+                                ExprX::VarAt(names[name].clone(), *at)
+                            }
+                            _ => return Ok(e.clone()),
+                        };
+                        Ok(SpannedTyped::new(&e.span, &e.typ, x))
+                    },
+                    &|p| {
+                        if let PlaceX::Local(name) = &p.x {
+                            if let Some(name) = names.get(name) {
+                                return Ok(SpannedTyped::new(
+                                    &p.span,
+                                    &p.typ,
+                                    PlaceX::Local(name.clone()),
+                                ));
+                            }
+                        }
+                        Ok(p.clone())
+                    },
+                )
+            };
+            body = rename_capture(&body)?;
+            require = Arc::new(require.iter().map(&rename_capture).collect::<Result<_, _>>()?);
+            ensure.0 = Arc::new(ensure.0.iter().map(&rename_capture).collect::<Result<_, _>>()?);
+        }
 
         if !pattern_stmts.is_empty() {
             require = Arc::new(
@@ -4274,6 +4381,7 @@ pub(crate) fn closure_to_vir<'tcx>(
 
             ExprX::NonSpecClosure {
                 params: Arc::new(params),
+                captures: Arc::new(captures.into_iter().map(|(_, capture)| capture).collect()),
                 proof_fn_modes,
                 body,
                 requires: require,
