@@ -1052,6 +1052,8 @@ pub enum ClosureKind {
     Fn,
     FnMut,
     FnOnce,
+    /// A concrete Fn closure whose environment Rustc proves Freeze.
+    FrozenFn,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, ToDebugSNode, Hash, PartialEq, Eq)]

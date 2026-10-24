@@ -1485,6 +1485,7 @@ impl fmt::Display for ClosureKind {
             ClosureKind::Fn => write!(f, "Fn"),
             ClosureKind::FnOnce => write!(f, "FnOnce"),
             ClosureKind::FnMut => write!(f, "FnMut"),
+            ClosureKind::FrozenFn => write!(f, "FrozenFn"),
         }
     }
 }
@@ -1492,7 +1493,9 @@ impl fmt::Display for ClosureKind {
 impl ClosureKind {
     pub(crate) fn trait_path(&self) -> Path {
         match self {
-            ClosureKind::Fn => crate::path![CrateId::Core => "ops", "function", "Fn"],
+            ClosureKind::Fn | ClosureKind::FrozenFn => {
+                crate::path![CrateId::Core => "ops", "function", "Fn"]
+            }
             ClosureKind::FnMut => crate::path![CrateId::Core => "ops", "function", "FnMut"],
             ClosureKind::FnOnce => crate::path![CrateId::Core => "ops", "function", "FnOnce"],
         }

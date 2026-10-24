@@ -1038,27 +1038,29 @@ fn exec_closure_spec(
     ensures: &Exprs,
 ) -> Result<Expr, VirErr> {
     let req_forall = exec_closure_spec_requires(state, span, closure_var, params, requires)?;
-
+    let mut specs = vec![req_forall];
     if ensures.len() > 0 {
         let ens_forall =
             exec_closure_spec_ensures(state, span, closure_var, params, ret, ensures, false)?;
-        let mut specs = vec![req_forall, ens_forall];
-        let borrowed_call_supported = match &*undecorate_typ(&closure_var.typ) {
-            TypX::Datatype(Dt::Path(path), _, _) => state.closure_typs.values().any(|closure| {
-                &closure.path == path
-                    && matches!(closure.kind, ClosureKind::Fn | ClosureKind::FnMut)
-            }),
-            _ => false,
-        };
-        if borrowed_call_supported {
-            specs.push(exec_closure_borrowed_spec_ensures(
-                state, span, closure_var, params, ret, ensures,
-            )?);
-        }
-        Ok(conjoin(span, &specs))
-    } else {
-        Ok(req_forall)
+        specs.push(ens_forall);
     }
+    let kind = match &*undecorate_typ(&closure_var.typ) {
+        TypX::Datatype(Dt::Path(path), _, _) => state
+            .closure_typs
+            .values()
+            .find(|closure| &closure.path == path)
+            .map(|closure| closure.kind),
+        _ => None,
+    };
+    let frozen_receiver = kind == Some(ClosureKind::FrozenFn);
+    if (ensures.len() > 0 || frozen_receiver)
+        && matches!(kind, Some(ClosureKind::Fn | ClosureKind::FnMut | ClosureKind::FrozenFn))
+    {
+        specs.push(exec_closure_borrowed_spec_ensures(
+            state, span, closure_var, params, ret, ensures, frozen_receiver,
+        )?);
+    }
+    Ok(conjoin(span, &specs))
 }
 
 fn exec_closure_borrowed_spec_ensures(
@@ -1068,26 +1070,40 @@ fn exec_closure_borrowed_spec_ensures(
     params: &VarBinders<Typ>,
     ret: &VarBinder<Typ>,
     ensures: &Exprs,
+    frozen_receiver: bool,
 ) -> Result<Expr, VirErr> {
     let call_ident = state.next_temp();
     let call_typ = Arc::new(TypX::MutRef(closure_var.typ.clone()));
     let call = SpannedTyped::new(span, &call_typ, ExprX::Var(call_ident.clone()));
-    let borrowed_ens =
-        exec_closure_spec_ensures(state, span, &call, params, ret, ensures, false)?;
-    let ExprX::Quant(quant, binders, body) = &borrowed_ens.x else {
-        unreachable!("closure ensures is quantified");
-    };
     let current = SpannedTyped::new(
         span,
         &closure_var.typ,
-        ExprX::Unary(UnaryOp::MutRefCurrent, call),
+        ExprX::Unary(UnaryOp::MutRefCurrent, call.clone()),
     );
+    let mut postconditions = ensures.as_ref().clone();
+    if frozen_receiver {
+        let future = SpannedTyped::new(
+            span,
+            &closure_var.typ,
+            ExprX::Unary(
+                UnaryOp::MutRefFuture(crate::ast::MutRefFutureSourceName::MutRefFuture),
+                call.clone(),
+            ),
+        );
+        // The generated FnMut shim invokes Fn through &self; Freeze rules out
+        // interior mutation of the receiver. Pointees and arguments are not framed.
+        postconditions.push(mk_eq(span, &future, &current));
+    }
+    let borrowed_ens =
+        exec_closure_spec_ensures(state, span, &call, params, ret, &postconditions, false)?;
+    let ExprX::Quant(quant, binders, body) = &borrowed_ens.x else {
+        unreachable!("closure ensures is quantified");
+    };
     let mut borrowed_binders = vec![Arc::new(VarBinderX { name: call_ident, a: call_typ })];
     borrowed_binders.extend(binders.iter().cloned());
 
     // Rust calls Fn/FnMut closures through &mut Closure using the same checked body.
-    // Retain the actual borrowing-call descriptor and its argument poststates;
-    // no equality between the closure's pre- and post-call states is asserted.
+    // Retain the actual borrowing-call descriptor and its argument poststates.
     let guarded_body = mk_implies(span, &mk_eq(span, &current, closure_var), body);
     Ok(SpannedTyped::new(
         span,

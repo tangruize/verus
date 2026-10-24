@@ -1234,6 +1234,11 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
 
             let kind = substs.as_closure().kind();
             let kind = match kind {
+                rustc_middle::ty::ClosureKind::Fn
+                    if ty.is_freeze(tcx, TypingEnv::post_analysis(tcx, param_env_src)) =>
+                {
+                    vir::ast::ClosureKind::FrozenFn
+                }
                 rustc_middle::ty::ClosureKind::Fn => vir::ast::ClosureKind::Fn,
                 rustc_middle::ty::ClosureKind::FnOnce => vir::ast::ClosureKind::FnOnce,
                 rustc_middle::ty::ClosureKind::FnMut => vir::ast::ClosureKind::FnMut,
