@@ -1256,7 +1256,15 @@ fn exec_owned_closure_spec(
     if !ensures.is_empty() {
         let after_name = state.next_temp();
         let after = SpannedTyped::new(span, &closure_var.typ, ExprX::Var(after_name.clone()));
-        let enss = bind_owned_captures(span, &receiver, &after, captures, ensures)?;
+        let mut enss = bind_owned_captures(span, &receiver, &after, captures, ensures)?;
+        if captures.iter().any(|capture| matches!(&*capture.a.typ, TypX::MutRef(_))) {
+            // The native FnOnce shim drops this scalar/reference-only environment after call_mut.
+            Arc::make_mut(&mut enss).push(SpannedTyped::new(
+                span,
+                &Arc::new(TypX::Bool),
+                ExprX::UnaryOpr(UnaryOpr::HasResolved(after.typ.clone()), after.clone()),
+            ));
+        }
         let uses_after = enss.iter().any(|expression| {
             crate::ast_visitor::expr_visitor_check(expression, &mut |_, e| {
                 if matches!(&e.x, ExprX::Var(name) if *name == after_name) {
