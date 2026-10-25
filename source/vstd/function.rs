@@ -132,6 +132,7 @@ pub axiom fn proof_fn_as_req_ens<
             f.ensures(args, output) ==> #[trigger] R::ens(args, output),
 ;
 
+// Retain only the upstream precondition bridge; do not freeze FnMut environments.
 pub broadcast axiom fn axiom_fn_mut_call_requires<Args: core::marker::Tuple, F: FnMut<Args>>(
     f: &mut F,
     args: Args,
@@ -142,23 +143,10 @@ pub broadcast axiom fn axiom_fn_mut_call_requires<Args: core::marker::Tuple, F: 
         #[trigger] call_requires::<Args, &mut F>(f, args),
 ;
 
-pub broadcast axiom fn axiom_fn_mut_call_ensures<Args: core::marker::Tuple, F: FnMut<Args>>(
-    f: &mut F,
-    args: Args,
-    output: F::Output,
-)
-    requires
-        #[trigger] call_ensures::<Args, &mut F>(f, args, output),
-    ensures
-        call_ensures::<Args, F>(mut_ref_current(f), args, output),
-        mut_ref_current(f) == mut_ref_future(f),
-;
-
 pub broadcast group group_function_axioms {
     axiom_proof_fn_requires,
     axiom_proof_fn_ensures,
     axiom_fn_mut_call_requires,
-    axiom_fn_mut_call_ensures,
 }
 
 } // verus!

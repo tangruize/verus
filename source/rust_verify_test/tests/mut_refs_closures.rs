@@ -4,6 +4,30 @@ mod common;
 use common::*;
 
 test_verify_one_file_with_options! {
+    #[test] fn_mut_postcondition_does_not_freeze_receiver [] => verus_code! {
+        use vstd::prelude::*;
+
+        proof fn test<F: FnMut(u64) -> u64>(receiver: &mut F, input: u64, output: u64)
+            requires call_ensures(receiver, (input,), output),
+        {
+            assert(*final(receiver) == *receiver); // FAILS
+        }
+    } => Err(err) => assert_fails(err, 1)
+}
+
+test_verify_one_file_with_options! {
+    #[test] fn_mut_call_without_receiver_frame [] => verus_code! {
+        use vstd::prelude::*;
+
+        fn call<F: FnMut() -> u64>(mut callback: F) -> u64
+            requires call_requires(callback, ()),
+        {
+            callback()
+        }
+    } => Ok(())
+}
+
+test_verify_one_file_with_options! {
     #[test] closure_with_mut_ref_arg_basic [] => verus_code! {
         use vstd::prelude::*;
 
