@@ -56,6 +56,7 @@ struct State {
     tuple_typs: HashSet<usize>,
     // Name of a datatype to represent each closure
     closure_typs: HashMap<usize, ClosureDatatype>,
+    closure_reference_depths: HashMap<usize, usize>,
     // Functions for which the corresponding FnDef type is used
     fndef_typs: HashSet<Fun>,
 }
@@ -68,6 +69,7 @@ impl State {
             rename_vars_reverse: HashMap::new(),
             tuple_typs: HashSet::new(),
             closure_typs: HashMap::new(),
+            closure_reference_depths: HashMap::new(),
             fndef_typs: HashSet::new(),
         }
     }
@@ -1221,9 +1223,11 @@ fn exec_owned_closure_spec(
     let TypX::Datatype(Dt::Path(path), ..) = &*undecorate_typ(&closure_var.typ) else {
         unreachable!("owned closure must have a datatype");
     };
-    let closure = state.closure_typs.values_mut().find(|c| &c.path == path).unwrap();
+    let (id, closure) = state.closure_typs.iter_mut().find(|(_, c)| &c.path == path).unwrap();
     assert!(closure.kind == ClosureKind::FnMut && closure.captures.is_empty());
     closure.captures = Arc::new(captures.iter().map(|c| c.a.typ.clone()).collect());
+    // Calling a generic F borrows it once beyond its source argument type.
+    let receiver_depth = state.closure_reference_depths.get(id).copied().unwrap_or(0) + 1;
 
     let fields = captures
         .iter()
@@ -1247,7 +1251,7 @@ fn exec_owned_closure_spec(
         facts.push(mk_eq(span, &field, &capture.a));
     }
 
-    // The body was checked for arbitrary captured scalar values, not only the
+    // The body was checked for arbitrary captured environments, not only the
     // values used by this construction. No unchanged-environment fact is emitted.
     let receiver = SpannedTyped::new(span, &closure_var.typ, ExprX::Var(state.next_temp()));
     let reqs = bind_owned_captures(span, &receiver, &receiver, captures, requires)?;
@@ -1304,28 +1308,60 @@ fn exec_owned_closure_spec(
         facts.push(quantify_owned_receiver(&receiver, &ens));
     }
 
-    let call_typ = Arc::new(TypX::MutRef(closure_var.typ.clone()));
-    let call = SpannedTyped::new(span, &call_typ, ExprX::Var(state.next_temp()));
-    let current = SpannedTyped::new(
-        span,
-        &closure_var.typ,
-        ExprX::Unary(UnaryOp::MutRefCurrent, call.clone()),
-    );
-    let reqs = bind_owned_captures(span, &current, &current, captures, requires)?;
-    let req = exec_closure_spec_requires(state, span, &call, params, &reqs)?;
-    facts.push(quantify_owned_receiver(&call, &req));
-    if !ensures.is_empty() {
-        let future = SpannedTyped::new(
+    let mut call_typ = closure_var.typ.clone();
+    for _ in 0..receiver_depth {
+        let referent_typ = call_typ.clone();
+        call_typ = Arc::new(TypX::MutRef(referent_typ.clone()));
+        let call = SpannedTyped::new(span, &call_typ, ExprX::Var(state.next_temp()));
+        let mut current = SpannedTyped::new(
             span,
-            &closure_var.typ,
+            &referent_typ,
+            ExprX::Unary(UnaryOp::MutRefCurrent, call.clone()),
+        );
+        let mut after = SpannedTyped::new(
+            span,
+            &referent_typ,
             ExprX::Unary(
                 UnaryOp::MutRefFuture(crate::ast::MutRefFutureSourceName::MutRefFuture),
                 call.clone(),
             ),
         );
-        let enss = bind_owned_captures(span, &current, &future, captures, ensures)?;
-        let ens = exec_closure_spec_ensures(state, span, &call, params, ret, &enss, false)?;
-        facts.push(quantify_owned_receiver(&call, &ens));
+        let mut frames = Vec::new();
+        while let TypX::MutRef(inner_typ) = &*current.typ {
+            // core's FnMut/FnOnce reference shims reborrow the pointee, not replace the reference.
+            let before_end = SpannedTyped::new(
+                span,
+                inner_typ,
+                ExprX::Unary(
+                    UnaryOp::MutRefFuture(crate::ast::MutRefFutureSourceName::MutRefFuture),
+                    current.clone(),
+                ),
+            );
+            let after_end = SpannedTyped::new(
+                span,
+                inner_typ,
+                ExprX::Unary(
+                    UnaryOp::MutRefFuture(crate::ast::MutRefFutureSourceName::MutRefFuture),
+                    after.clone(),
+                ),
+            );
+            frames.push(mk_eq(span, &before_end, &after_end));
+            after = SpannedTyped::new(span, inner_typ, ExprX::Unary(UnaryOp::MutRefCurrent, after));
+            current = SpannedTyped::new(
+                span,
+                inner_typ,
+                ExprX::Unary(UnaryOp::MutRefCurrent, current.clone()),
+            );
+        }
+        let reqs = bind_owned_captures(span, &current, &current, captures, requires)?;
+        let req = exec_closure_spec_requires(state, span, &call, params, &reqs)?;
+        facts.push(quantify_owned_receiver(&call, &req));
+        if !ensures.is_empty() || !frames.is_empty() {
+            let mut enss = bind_owned_captures(span, &current, &after, captures, ensures)?;
+            Arc::make_mut(&mut enss).extend(frames);
+            let ens = exec_closure_spec_ensures(state, span, &call, params, ret, &enss, false)?;
+            facts.push(quantify_owned_receiver(&call, &ens));
+        }
     }
     Ok(conjoin(span, &facts))
 }
@@ -1485,6 +1521,29 @@ fn simplify_function(
     function: &Function,
 ) -> Result<Function, VirErr> {
     state.reset_for_function();
+    // Record reference nesting before bottom-up simplification erases anonymous closure types.
+    let mut scan_scope: VisitorScopeMap = ScopeMap::new();
+    crate::ast_visitor::map_function_visitor_env(
+        function,
+        &mut scan_scope,
+        state,
+        &|_, _, expression| Ok(expression.clone()),
+        &|_, _, statement| Ok(vec![statement.clone()]),
+        &|state, typ| {
+            let mut depth = 0;
+            let mut base = typ;
+            while let TypX::MutRef(inner) = &**base {
+                depth += 1;
+                base = inner;
+            }
+            if let TypX::AnonymousClosure(_, _, _, id) = &**base {
+                let observed = state.closure_reference_depths.entry(*id).or_insert(0);
+                *observed = (*observed).max(depth);
+            }
+            Ok(typ.clone())
+        },
+        &|_, _, place| Ok(place.clone()),
+    )?;
     let mut functionx = function.x.clone();
 
     if let Some(r) = functionx.returns.clone() {
