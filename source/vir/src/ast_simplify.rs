@@ -1261,7 +1261,18 @@ fn exec_owned_closure_spec(
         let after_name = state.next_temp();
         let after = SpannedTyped::new(span, &closure_var.typ, ExprX::Var(after_name.clone()));
         let mut enss = bind_owned_captures(span, &receiver, &after, captures, ensures)?;
-        if captures.iter().any(|capture| matches!(&*capture.a.typ, TypX::MutRef(_))) {
+        let scalar_reference_only = captures.iter().all(|capture| {
+            matches!(
+                &*capture.a.typ,
+                TypX::Bool
+                    | TypX::Int(_)
+                    | TypX::MutRef(_)
+                    | TypX::Decorate(crate::ast::TypDecoration::Ref, _, _)
+            )
+        });
+        if scalar_reference_only
+            && captures.iter().any(|capture| matches!(&*capture.a.typ, TypX::MutRef(_)))
+        {
             // The native FnOnce shim drops this scalar/reference-only environment after call_mut.
             Arc::make_mut(&mut enss).push(SpannedTyped::new(
                 span,

@@ -4172,12 +4172,28 @@ fn direct_captures<'tcx>(
             UpvarCapture::ByRef(BorrowKind::Immutable) => (false, true),
             _ => return Ok((vec![], vec![])),
         };
+        let scalar = |typ: rustc_middle::ty::Ty<'tcx>| {
+            matches!(typ.kind(), TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_))
+        };
+        let owned_scalar_vector = !borrowed
+            && !shared
+            && ty_is_vec(bctx.ctxt.tcx, capture.place.base_ty)
+            && match capture.place.base_ty.kind() {
+                TyKind::Adt(_, args) if args.len() == 2 && scalar(args.type_at(0)) => {
+                    match args.type_at(1).kind() {
+                        TyKind::Adt(allocator, _) => {
+                            let path = verus_items::def_id_to_stable_rust_path(
+                                bctx.ctxt.tcx, allocator.did(),
+                            );
+                            path.as_deref() == Some("alloc::alloc::Global")
+                        }
+                        _ => false,
+                    }
+                }
+                _ => false,
+            };
         if !capture.place.projections.is_empty()
-            || (!borrowed
-                && !matches!(
-                    capture.place.base_ty.kind(),
-                    TyKind::Bool | TyKind::Int(_) | TyKind::Uint(_)
-                ))
+            || (!borrowed && !scalar(capture.place.base_ty) && !owned_scalar_vector)
         {
             return Ok((vec![], vec![]));
         }
@@ -4233,6 +4249,8 @@ fn direct_captures<'tcx>(
                 vir::ast::ReadKind::Move
             } else if shared {
                 vir::ast::ReadKind::ImmutBor
+            } else if !bctx.is_copy(capture.place.base_ty) {
+                vir::ast::ReadKind::Move
             } else {
                 vir::ast::ReadKind::Copy
             },
