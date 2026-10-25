@@ -42,6 +42,35 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] test_local_derived_item verus_code! {
+        fn local_derived_item() {
+            #[derive(Debug)]
+            enum RestoreUnitError {
+                Unknown,
+                Duplicate,
+            }
+
+            let _error = RestoreUnitError::Unknown;
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] test_local_derived_item_body_is_checked verus_code! {
+        fn local_derived_item() {
+            #[derive(Debug)]
+            enum RestoreUnitError {
+                Unknown,
+                Duplicate,
+            }
+
+            let _error = RestoreUnitError::Unknown;
+            assert(false); // FAILS
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
     #[ignore] #[test] test_stmts_expr_3 verus_code! {
         fn id(v: &mut u64)
             ensures *v == *old(v)
