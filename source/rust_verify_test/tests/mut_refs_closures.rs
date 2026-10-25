@@ -4,6 +4,161 @@ mod common;
 use common::*;
 
 test_verify_one_file_with_options! {
+    #[test] flat_owned_capture_calls [] => verus_code! {
+        use vstd::prelude::*;
+
+        struct Record { bit: bool, tag: u64 }
+
+        impl Record {
+            fn step(&mut self) -> (result: bool)
+                ensures
+                    result == (old(self).bit && old(self).tag < 128u64),
+                    final(self).bit == !old(self).bit,
+                    final(self).tag == old(self).tag,
+            {
+                let result = self.bit && self.tag < 128;
+                self.bit = !self.bit;
+                result
+            }
+        }
+
+        fn consume<F: FnOnce() -> bool>(callback: F) -> (result: bool)
+            requires callback.requires(()),
+            ensures callback.ensures((), result),
+        {
+            callback()
+        }
+
+        fn record_history(initial: bool, tag: u64) -> (result: (bool, bool))
+            ensures result == (initial && tag < 128u64, !initial && tag < 128u64),
+        {
+            let mut owner = Record { bit: initial, tag };
+            let mut callback = move || -> (hit: bool)
+                ensures
+                    hit == (old(&owner).bit && old(&owner).tag < 128u64),
+                    owner.bit == !old(&owner).bit,
+                    owner.tag == old(&owner).tag,
+            {
+                owner.step()
+            };
+            let first = callback();
+            (first, consume(callback))
+        }
+
+        struct Guard<'a> { state: &'a mut bool }
+
+        impl Guard<'_> {
+            fn step(&mut self) -> (result: bool)
+                ensures
+                    result == *old(self).state,
+                    *final(self).state == !*old(self).state,
+            {
+                let result = *self.state;
+                *self.state = !result;
+                result
+            }
+        }
+
+        impl Drop for Guard<'_> {
+            fn drop(&mut self)
+                opens_invariants none
+                no_unwind
+            {
+                *self.state = true;
+            }
+        }
+
+        fn guard_history(initial: bool) -> (result: (bool, bool, bool))
+            ensures result.0 == initial, result.1 == !initial,
+        {
+            let mut state = initial;
+            let first;
+            let second;
+            {
+                let mut owner = Guard { state: &mut state };
+                let mut callback = move || -> (hit: bool)
+                    ensures
+                        hit == *old(&owner).state,
+                        *owner.state == !*old(&owner).state,
+                {
+                    owner.step()
+                };
+                first = callback();
+                second = consume(callback);
+            }
+            (first, second, state)
+        }
+    } => Ok(())
+}
+
+test_verify_one_file_with_options! {
+    #[test] flat_owned_capture_obligations [] => verus_code! {
+        use vstd::prelude::*;
+
+        struct Record { bit: bool }
+
+        impl Record {
+            fn step(&mut self) -> (result: bool)
+                ensures result == old(self).bit, final(self).bit == !old(self).bit,
+            {
+                let result = self.bit;
+                self.bit = !result;
+                result
+            }
+        }
+
+        fn body_checked_for_all_states() {
+            let mut owner = Record { bit: false };
+            let mut callback = move || -> (hit: bool)
+                ensures !hit, // FAILS
+            {
+                owner.step()
+            };
+            callback();
+            callback();
+        }
+
+        fn callable_domain_preserved() {
+            let mut owner = Record { bit: false };
+            let mut callback = move |allowed: bool|
+                requires allowed,
+            {
+                owner.step()
+            };
+            callback(false); // FAILS
+        }
+
+        struct Guard<'a> { state: &'a mut bool }
+
+        impl Guard<'_> {
+            fn step(&mut self) {
+                *self.state = !*self.state;
+            }
+        }
+
+        impl Drop for Guard<'_> {
+            fn drop(&mut self)
+                opens_invariants none
+                no_unwind
+            {
+                *self.state = true;
+            }
+        }
+
+        fn no_unchanged_destructor_field() {
+            let mut state = false;
+            {
+                let mut owner = Guard { state: &mut state };
+                let mut callback = move || { owner.step(); };
+                callback();
+                callback();
+            }
+            assert(!state); // FAILS
+        }
+    } => Err(err) => assert_fails(err, 3)
+}
+
+test_verify_one_file_with_options! {
     #[test] closure_with_mut_ref_arg_basic [] => verus_code! {
         use vstd::prelude::*;
 

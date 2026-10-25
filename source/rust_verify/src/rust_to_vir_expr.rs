@@ -4192,8 +4192,23 @@ fn direct_captures<'tcx>(
                 }
                 _ => false,
             };
+        let owned_flat_record = !borrowed
+            && !shared
+            && match capture.place.base_ty.kind() {
+                TyKind::Adt(def, args) if def.is_struct() && def.did().is_local() => {
+                    def.non_enum_variant().fields.iter().all(|field| {
+                        let typ = field.ty(bctx.ctxt.tcx, args);
+                        scalar(typ)
+                            || matches!(typ.kind(), TyKind::Ref(_, inner, _) if scalar(*inner))
+                    })
+                }
+                _ => false,
+            };
         if !capture.place.projections.is_empty()
-            || (!borrowed && !scalar(capture.place.base_ty) && !owned_scalar_vector)
+            || (!borrowed
+                && !scalar(capture.place.base_ty)
+                && !owned_scalar_vector
+                && !owned_flat_record)
         {
             return Ok((vec![], vec![]));
         }
