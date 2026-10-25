@@ -4,7 +4,7 @@ mod common;
 use common::*;
 
 test_verify_one_file_with_options! {
-    #[test] flat_owned_capture_calls [] => verus_code! {
+    #[test] flat_owned_capture_record_calls [] => verus_code! {
         use vstd::prelude::*;
 
         struct Record { bit: bool, tag: u64 }
@@ -44,6 +44,19 @@ test_verify_one_file_with_options! {
             let first = callback();
             (first, consume(callback))
         }
+    } => Ok(())
+}
+
+test_verify_one_file_with_options! {
+    #[test] flat_owned_capture_guard_calls [] => verus_code! {
+        use vstd::prelude::*;
+
+        fn consume<F: FnOnce() -> bool>(callback: F) -> (result: bool)
+            requires callback.requires(()),
+            ensures callback.ensures((), result),
+        {
+            callback()
+        }
 
         struct Guard<'a> { state: &'a mut bool }
 
@@ -79,7 +92,7 @@ test_verify_one_file_with_options! {
                 let mut callback = move || -> (hit: bool)
                     ensures
                         hit == *old(&mut owner).state,
-                        *owner.state == !*old(&mut owner).state,
+                        mut_ref_current(owner.state) == !*old(&mut owner).state,
                 {
                     owner.step()
                 };
