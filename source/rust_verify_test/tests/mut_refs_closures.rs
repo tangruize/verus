@@ -22,27 +22,30 @@ test_verify_one_file_with_options! {
             }
         }
 
-        fn consume<F: FnOnce() -> bool>(callback: F) -> (result: bool)
-            requires callback.requires(()),
-            ensures callback.ensures((), result),
+        fn consume<F: FnOnce(bool, u64) -> bool>(
+            callback: F, bit: bool, tag: u64,
+        ) -> (result: bool)
+            requires callback.requires((bit, tag)),
+            ensures callback.ensures((bit, tag), result),
         {
-            callback()
+            callback(bit, tag)
         }
 
         fn record_history(initial: bool, tag: u64) -> (result: (bool, bool))
             ensures result == (initial && tag < 128u64, !initial && tag < 128u64),
         {
             let mut owner = Record { bit: initial, tag };
-            let mut callback = move || -> (hit: bool)
+            let mut callback = move |before: bool, observed_tag: u64| -> (hit: bool)
+                requires owner.bit == before, owner.tag == observed_tag,
                 ensures
-                    hit == (old(&mut owner).bit && old(&mut owner).tag < 128u64),
-                    owner.bit == !old(&mut owner).bit,
-                    owner.tag == old(&mut owner).tag,
+                    hit == (before && observed_tag < 128u64),
+                    owner.bit == !before,
+                    owner.tag == observed_tag,
             {
                 owner.step()
             };
-            let first = callback();
-            (first, consume(callback))
+            let first = callback(initial, tag);
+            (first, consume(callback, !initial, tag))
         }
     } => Ok(())
 }
@@ -91,8 +94,8 @@ test_verify_one_file_with_options! {
                 let mut owner = Guard { state: &mut state };
                 let mut callback = move || -> (hit: bool)
                     ensures
-                        hit == *old(&mut owner).state,
-                        mut_ref_current(owner.state) == !*old(&mut owner).state,
+                        hit == *old(owner.state),
+                        mut_ref_current(owner.state) == !*old(owner.state),
                 {
                     owner.step()
                 };
