@@ -1027,6 +1027,10 @@ pub fn trait_decls_to_air(ctx: &Ctx, krate: &crate::sst::KrateSst) -> Commands {
             iparams.extend(crate::def::types().iter().map(|s| str_typ(s)));
             dparams.extend(crate::def::types().iter().map(|s| str_typ(s)));
         }
+        for _ in tr.x.assoc_typs.iter() {
+            iparams.extend(crate::def::types().iter().map(|s| str_typ(s)));
+            dparams.extend(crate::def::types().iter().map(|s| str_typ(s)));
+        }
         dparams.push(str_typ(crate::def::POLY));
 
         let decl_trait_bound = Arc::new(DeclX::Fun(

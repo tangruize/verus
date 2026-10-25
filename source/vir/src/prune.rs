@@ -296,6 +296,11 @@ fn reach_typ(ctxt: &Ctxt, state: &mut State, typ: &Typ) {
         TypX::Dyn(trait_path, _, _) => {
             reach_type(ctxt, state, &typ_to_reached_type(typ));
             reach_bound_trait(ctxt, state, trait_path);
+            if let Some(tr) = ctxt.trait_map.get(trait_path) {
+                for name in tr.x.assoc_typs.iter() {
+                    reach_assoc_type_decl(ctxt, state, &(trait_path.clone(), name.clone()));
+                }
+            }
             state.dyn_traits.insert(trait_path.clone());
         }
         TypX::Opaque { def_path, .. } => {

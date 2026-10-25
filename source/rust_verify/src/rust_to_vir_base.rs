@@ -1460,7 +1460,28 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
             } else {
                 false
             };
-            if preds.len() != 1 && !supports_send_sync {
+            let future_output = if preds.len() == 2 {
+                let mut future_trait = false;
+                let mut output = None;
+                for pred in preds.iter() {
+                    match pred.skip_binder() {
+                        ExistentialPredicate::Trait(trait_ref) => {
+                            future_trait =
+                                Some(trait_ref.def_id) == tcx.lang_items().future_trait();
+                        }
+                        ExistentialPredicate::Projection(projection) => {
+                            if Some(projection.def_id) == tcx.lang_items().future_output() {
+                                output = projection.term.as_type();
+                            }
+                        }
+                        ExistentialPredicate::AutoTrait(_) => {}
+                    }
+                }
+                future_trait.then_some(output).flatten()
+            } else {
+                None
+            };
+            if preds.len() != 1 && !supports_send_sync && future_output.is_none() {
                 unsupported_err!(span, "dyn with more that one trait");
             }
             let principal = preds
@@ -1478,7 +1499,10 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
                     ty_args_with_self.extend(args.into_iter());
                     let args_with_self = tcx.mk_args(&ty_args_with_self);
                     let typ_args = mk_typ_args(&args)?;
-                    let typ_args = typ_args.into_iter().map(|(t, _)| t).collect();
+                    let mut typ_args: Vec<_> = typ_args.into_iter().map(|(t, _)| t).collect();
+                    if let Some(output) = future_output {
+                        typ_args.push(t_rec(&output)?.0);
+                    }
                     let impl_paths = get_impl_paths(
                         tcx,
                         verus_items,

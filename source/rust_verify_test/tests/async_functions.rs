@@ -196,6 +196,97 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] async_dyn_future_output_relation verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn projected_identity<F: Future + ?Sized>(
+            _future: &F,
+            output: F::Output,
+        ) -> (result: F::Output)
+            ensures result == output,
+        {
+            output
+        }
+
+        fn retain_projected_output<'a>(
+            future: &'a (dyn Future<Output = usize> + 'a),
+            output: usize,
+        ) -> (result: usize)
+            ensures result == output,
+        {
+            projected_identity(future, output)
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] async_dyn_future_output_relation_is_checked verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn projected_identity<F: Future + ?Sized>(
+            _future: &F,
+            output: F::Output,
+        ) -> (result: F::Output)
+            ensures result == output,
+        {
+            output
+        }
+
+        fn reject_wrong_projected_output<'a>(
+            future: &'a (dyn Future<Output = usize> + 'a),
+            output: usize,
+        ) -> (result: usize)
+            ensures result == output + 1, // FAILS
+        {
+            projected_identity(future, output)
+        }
+    } => Err(err) => assert_vir_error_msg(err, "postcondition not satisfied")
+}
+
+test_verify_one_file! {
+    #[test] async_dyn_future_auto_trait_is_not_dropped verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn reject_auto_trait<'a>(
+            _future: &'a (dyn Future<Output = usize> + Send + 'a),
+        ) {
+        }
+    } => Err(err) => assert_vir_error_msg(err, "dyn with more that one trait")
+}
+
+test_verify_one_file! {
+    #[test] async_dyn_future_parameter verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn retain_type(_future: &dyn Future<Output = usize>) {
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] async_dyn_future_coercions verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn as_dyn<'a, F: Future<Output = usize> + 'a>(
+            future: &'a F,
+        ) -> &'a (dyn Future<Output = usize> + 'a) {
+            future
+        }
+
+        fn as_dyn_mut<'a, F: Future<Output = usize> + 'a>(
+            future: &'a mut F,
+        ) -> &'a mut (dyn Future<Output = usize> + 'a) {
+            future
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
     #[test] unit_return_value_issue2321 verus_code! {
         use vstd::prelude::*;
         async fn set_zero(x: &mut usize)

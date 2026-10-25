@@ -113,10 +113,11 @@ impl EmitError for EmitErrorState {
 /// trait hasn't been computed yet.
 pub fn finish_dyn_compatability_checks(
     krate: &Krate,
+    imported: &[Krate],
     checks: Vec<DynCompatabilityChecks>,
 ) -> Result<(), Vec<VirErr>> {
     let mut trait_map = HashMap::new();
-    for traitt in krate.traits.iter() {
+    for traitt in imported.iter().flat_map(|k| k.traits.iter()).chain(krate.traits.iter()) {
         trait_map.insert(traitt.x.name.clone(), traitt.clone());
     }
 

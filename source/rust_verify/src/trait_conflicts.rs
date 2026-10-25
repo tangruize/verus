@@ -460,11 +460,17 @@ pub(crate) fn gen_check_trait_impl_conflicts(
         );
         let t_args =
             generic_params.iter().map(|p| Box::new(TypX::TypParam(p.name.clone()))).collect();
-        let (a_params, a_bounds) =
+        let (a_params, mut a_bounds) =
             gen_generics(state, &t.x.assoc_typs, &t.x.assoc_typs_bounds, None);
         let mut assoc_typs: Vec<(Id, Vec<GenericParam>, Typ)> = Vec::new();
         for x in &a_params {
-            // TODO: test associated types once we support "dyn with more than one trait"
+            let (bounds_x, bounds_other) =
+                crate::trait_check_emit::simplify_assoc_typ_bounds(&name, &x.name, a_bounds);
+            a_bounds = bounds_other;
+            generic_bounds.extend(bounds_x.into_iter().map(|bound| GenericBound {
+                typ: Box::new(TypX::TypParam(x.name.clone())),
+                ..bound
+            }));
             generic_params.push(x.clone());
             assoc_typs.push((x.name.clone(), vec![], Box::new(TypX::TypParam(x.name.clone()))));
         }
