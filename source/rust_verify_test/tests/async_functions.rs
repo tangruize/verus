@@ -196,6 +196,84 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] async_block_in_closure verus_code! {
+        use vstd::prelude::*;
+
+        struct Owned(usize);
+
+        async fn receive(owned: Owned) -> (result: Owned)
+            ensures result.0 == owned.0,
+        {
+            owned
+        }
+
+        fn retain<T>(value: T) -> T {
+            value
+        }
+
+        async fn test() {
+            let make_future = |owned: Owned| async move {
+                let expected = owned.0;
+                let received = receive(owned).await;
+                assert(received.0 == expected);
+                received.0
+            };
+            let _future = retain(make_future(Owned(7)));
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] async_block_body_is_checked verus_code! {
+        use vstd::prelude::*;
+
+        async fn test() {
+            let make_future = || async move {
+                assert(false); // FAILS
+            };
+            let _future = make_future();
+        }
+    } => Err(err) => assert_vir_error_msg(err, "assertion failed")
+}
+
+test_verify_one_file! {
+    #[test] async_block_future_bound_remains_unsupported verus_code! {
+        use core::future::Future;
+        use vstd::prelude::*;
+
+        fn retain_future<F: Future<Output = usize>>(future: F) -> F {
+            future
+        }
+
+        async fn test() {
+            let future = retain_future(async { 7usize });
+            let _value: usize = future.await;
+        }
+    } => Err(err) => assert_vir_error_msg(err, "Verus does not recognize this trait bound")
+}
+
+test_verify_one_file! {
+    #[test] async_block_direct_await verus_code! {
+        use vstd::prelude::*;
+
+        async fn test() {
+            let _value: usize = (async { 7usize }).await;
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] async_block_direct_await_does_not_prove_false verus_code! {
+        use vstd::prelude::*;
+
+        async fn test() {
+            let _value: usize = (async { 7usize }).await;
+            assert(false); // FAILS
+        }
+    } => Err(err) => assert_vir_error_msg(err, "assertion failed")
+}
+
+test_verify_one_file! {
     #[test] async_dyn_future_output_relation verus_code! {
         use core::future::Future;
         use vstd::prelude::*;

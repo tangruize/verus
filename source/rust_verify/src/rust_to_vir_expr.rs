@@ -61,9 +61,9 @@ use crate::erase::{MiscCall, ResolvedCall};
 use crate::fn_call_to_vir::{const_var_to_vir, fn_call_to_vir};
 use crate::rust_intrinsics_to_vir::int_intrinsic_constant_to_vir;
 use crate::rust_to_vir_base::{
-    bitwidth_and_signedness_of_integer_type, get_impl_paths_for_clauses, get_range, is_integer_ty,
-    is_smt_arith, is_smt_equality, local_to_var, mid_ty_simplify, mk_range, ty_is_vec,
-    typ_of_expr_adjusted, typ_of_node_unadjusted,
+    bitwidth_and_signedness_of_integer_type, get_impl_paths_for_clauses, get_range,
+    is_async_block_coroutine, is_integer_ty, is_smt_arith, is_smt_equality, local_to_var,
+    mid_ty_simplify, mk_range, ty_is_vec, typ_of_expr_adjusted, typ_of_node_unadjusted,
 };
 use crate::rust_to_vir_ctor::{resolve_braces_ctor, resolve_ctor};
 use crate::util::{err_span, slice_vec_map_result, vec_map_result};
@@ -470,6 +470,9 @@ pub(crate) fn closure_param_typs<'tcx>(
                 _ => panic!("expected tuple type"),
             }
         }
+        TyKind::Coroutine(def, _) if is_async_block_coroutine(bctx.ctxt.tcx, *def) => {
+            Ok(Vec::new())
+        }
         _ => panic!("closure_param_types expected Closure type"),
     }
 }
@@ -480,6 +483,10 @@ fn closure_ret_typ<'tcx>(bctx: &BodyCtxt<'tcx>, expr: &Expr<'tcx>) -> Result<Typ
         TyKind::Closure(_def, substs) => {
             let sig = substs.as_closure().sig();
             let t = sig.output().skip_binder();
+            bctx.mid_ty_to_vir(expr.span, &t)
+        }
+        TyKind::Coroutine(def, substs) if is_async_block_coroutine(bctx.ctxt.tcx, *def) => {
+            let t = substs.as_coroutine().return_ty();
             bctx.mid_ty_to_vir(expr.span, &t)
         }
         _ => panic!("closure_param_types expected Closure type"),
@@ -4369,7 +4376,15 @@ pub(crate) fn closure_to_vir<'tcx>(
         let body = bctx.ctxt.tcx.hir_body(*body_id);
 
         let typs = closure_param_typs(bctx, closure_expr)?;
-        assert!(typs.len() == body.params.len());
+        let is_async_block = matches!(
+            bctx.types.node_type(closure_expr.hir_id).kind(),
+            TyKind::Coroutine(def, _) if is_async_block_coroutine(bctx.ctxt.tcx, *def)
+        );
+        if is_async_block {
+            assert!(body.params.len() == 1);
+        } else {
+            assert!(typs.len() == body.params.len());
+        }
 
         let mut pattern_stmts = Vec::new();
 

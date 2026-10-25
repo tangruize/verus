@@ -1038,6 +1038,19 @@ pub(crate) fn mid_generics_filter_for_external_impls<'tcx>(
     true
 }
 
+pub(crate) fn is_async_block_coroutine(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    let Some(local_def_id) = def_id.as_local() else {
+        return false;
+    };
+    matches!(
+        tcx.coroutine_kind(local_def_id),
+        Some(rustc_hir::CoroutineKind::Desugared(
+            rustc_hir::CoroutineDesugaring::Async,
+            rustc_hir::CoroutineSource::Block,
+        ))
+    )
+}
+
 // returns VIR Typ and whether Ghost/Tracked was erased from around the outside of the VIR Typ
 pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -1525,6 +1538,20 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         }
         TyKind::Foreign(..) => unsupported_err!(span, "foreign types"),
         TyKind::FnPtr(..) => unsupported_err!(span, "function pointer types"),
+        TyKind::Coroutine(def, substs) if is_async_block_coroutine(tcx, *def) => {
+            // This checks block bodies; the coroutine's Future implementation is not modeled yet.
+            let ret = t_rec(&substs.as_coroutine().return_ty())?.0;
+            let id = def.as_local().unwrap().local_def_index.index();
+            (
+                Arc::new(TypX::AnonymousClosure(
+                    Arc::new(Vec::new()),
+                    ret,
+                    vir::ast::ClosureKind::FnOnce,
+                    id,
+                )),
+                false,
+            )
+        }
         TyKind::Coroutine(..) => unsupported_err!(span, "generator types"),
         TyKind::CoroutineWitness(..) => unsupported_err!(span, "generator witness types"),
         TyKind::Bound(..) => unsupported_err!(span, "for<'a> types"),
