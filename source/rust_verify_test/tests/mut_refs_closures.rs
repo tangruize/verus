@@ -35,9 +35,9 @@ test_verify_one_file_with_options! {
             let mut owner = Record { bit: initial, tag };
             let mut callback = move || -> (hit: bool)
                 ensures
-                    hit == (old(&owner).bit && old(&owner).tag < 128u64),
-                    owner.bit == !old(&owner).bit,
-                    owner.tag == old(&owner).tag,
+                    hit == (old(&mut owner).bit && old(&mut owner).tag < 128u64),
+                    owner.bit == !old(&mut owner).bit,
+                    owner.tag == old(&mut owner).tag,
             {
                 owner.step()
             };
@@ -78,8 +78,8 @@ test_verify_one_file_with_options! {
                 let mut owner = Guard { state: &mut state };
                 let mut callback = move || -> (hit: bool)
                     ensures
-                        hit == *old(&owner).state,
-                        *owner.state == !*old(&owner).state,
+                        hit == *old(&mut owner).state,
+                        *owner.state == !*old(&mut owner).state,
                 {
                     owner.step()
                 };
