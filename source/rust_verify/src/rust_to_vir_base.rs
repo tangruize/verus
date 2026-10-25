@@ -1440,10 +1440,34 @@ pub(crate) fn mid_ty_to_vir_ghost<'tcx>(
         }
         TyKind::Dynamic(preds, _) => {
             use rustc_middle::ty::ExistentialPredicate;
-            if preds.len() != 1 {
+            let supports_send_sync = if preds.len() == 3 {
+                let send_trait = tcx.get_diagnostic_item(rustc_span::sym::Send);
+                let sync_trait = tcx.lang_items().sync_trait();
+                let mut trait_count = 0;
+                let mut has_send = false;
+                let mut has_sync = false;
+                for pred in preds.iter() {
+                    match pred.skip_binder() {
+                        ExistentialPredicate::Trait(_) => trait_count += 1,
+                        ExistentialPredicate::AutoTrait(def_id) => {
+                            has_send |= Some(def_id) == send_trait;
+                            has_sync |= Some(def_id) == sync_trait;
+                        }
+                        ExistentialPredicate::Projection(_) => {}
+                    }
+                }
+                trait_count == 1 && has_send && has_sync
+            } else {
+                false
+            };
+            if preds.len() != 1 && !supports_send_sync {
                 unsupported_err!(span, "dyn with more that one trait");
             }
-            match preds[0].skip_binder() {
+            let principal = preds
+                .iter()
+                .find(|pred| matches!(pred.skip_binder(), ExistentialPredicate::Trait(_)))
+                .unwrap_or(preds[0]);
+            match principal.skip_binder() {
                 ExistentialPredicate::Trait(trait_ref) => {
                     let trait_did = trait_ref.def_id;
                     let args = trait_ref.args;

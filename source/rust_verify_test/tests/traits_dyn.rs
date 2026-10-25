@@ -593,6 +593,36 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] dyn_send_sync verus_code! {
+        trait Read {
+            fn value(&self) -> (result: u8)
+                ensures result == 7;
+        }
+
+        fn call(value: &(dyn Read + Send + Sync)) -> (result: u8)
+            ensures result == 7,
+        {
+            value.value()
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] dyn_send_sync_contract_is_checked verus_code! {
+        trait Read {
+            fn value(&self) -> (result: u8)
+                ensures result == 7;
+        }
+
+        fn call(value: &(dyn Read + Send + Sync)) -> (result: u8)
+            ensures result == 8, // FAILS
+        {
+            value.value()
+        }
+    } => Err(err) => assert_vir_error_msg(err, "postcondition not satisfied")
+}
+
+test_verify_one_file! {
     #[test] dyn_unsupported2 verus_code! {
         trait T {}
         fn test(d: &dyn Fn() -> ()) {
