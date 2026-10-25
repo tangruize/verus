@@ -4139,6 +4139,7 @@ struct DirectCapture {
     original: VarIdent,
     field: VarBinder<vir::ast::Expr>,
     borrowed: bool,
+    shared: bool,
 }
 
 fn direct_captures<'tcx>(
@@ -4165,9 +4166,10 @@ fn direct_captures<'tcx>(
             // The existing erasure pass removes this macro-inserted lifetime marker.
             continue;
         }
-        let borrowed = match capture.info.capture_kind {
-            UpvarCapture::ByValue => false,
-            UpvarCapture::ByRef(BorrowKind::Mutable) => true,
+        let (borrowed, shared) = match capture.info.capture_kind {
+            UpvarCapture::ByValue => (false, false),
+            UpvarCapture::ByRef(BorrowKind::Mutable) => (true, false),
+            UpvarCapture::ByRef(BorrowKind::Immutable) => (false, true),
             _ => return Ok((vec![], vec![])),
         };
         if !capture.place.projections.is_empty()
@@ -4223,9 +4225,14 @@ fn direct_captures<'tcx>(
         } else {
             place
         };
+        if shared {
+            typ = Arc::new(TypX::Decorate(vir::ast::TypDecoration::Ref, None, typ));
+        }
         let read = UnfinalizedReadKind {
             preliminary_kind: if borrowed {
                 vir::ast::ReadKind::Move
+            } else if shared {
+                vir::ast::ReadKind::ImmutBor
             } else {
                 vir::ast::ReadKind::Copy
             },
@@ -4240,6 +4247,7 @@ fn direct_captures<'tcx>(
             original,
             field: Arc::new(VarBinderX { name, a: value }),
             borrowed,
+            shared,
         });
     }
     let constructors = bctx.ctxt.clone_stmts_with_fresh_ids(&constructors);
@@ -4364,7 +4372,7 @@ pub(crate) fn closure_to_vir<'tcx>(
                                 }
                                 return Ok(SpannedTyped::new(
                                     &p.span,
-                                    &p.typ,
+                                    &capture.field.a.typ,
                                     PlaceX::Local(capture.field.name.clone()),
                                 ));
                             }
@@ -4407,6 +4415,24 @@ pub(crate) fn closure_to_vir<'tcx>(
                 &future(before),
                 &future(after),
             ));
+        }
+
+        for capture in captures.iter().filter(|capture| capture.shared) {
+            // A native shared scalar capture uses the existing shared-reference model.
+            // Check its retained value in the body; do not assume a receiver-wide frame.
+            let span = bctx.ctxt.spans.to_air_span(closure_expr.span);
+            bctx.ctxt.erasure_info.borrow_mut().hir_vir_ids.push((None, span.id));
+            let before = SpannedTyped::new(
+                &span,
+                &capture.field.a.typ,
+                ExprX::VarAt(capture.field.name.clone(), vir::ast::VarAt::Pre),
+            );
+            let after = SpannedTyped::new(
+                &span,
+                &capture.field.a.typ,
+                ExprX::Var(capture.field.name.clone()),
+            );
+            Arc::make_mut(&mut ensure.0).push(vir::ast_util::mk_eq(&span, &before, &after));
         }
 
         if !pattern_stmts.is_empty() {
