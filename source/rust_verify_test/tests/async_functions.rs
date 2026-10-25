@@ -169,6 +169,33 @@ test_verify_one_file! {
 }
 
 test_verify_one_file! {
+    #[test] test_async_trait_default_method verus_code! {
+        use vstd::prelude::*;
+        use core::time::Duration;
+
+        struct Error;
+
+        trait StateUnit {
+            async fn advance_time(&mut self, _duration: Duration) -> Result<(), Error> {
+                Ok(())
+            }
+        }
+    } => Ok(())
+}
+
+test_verify_one_file! {
+    #[test] test_async_trait_default_method_body_is_checked verus_code! {
+        use vstd::prelude::*;
+
+        trait StateUnit {
+            async fn advance_time(&mut self) {
+                assert(false); // FAILS
+            }
+        }
+    } => Err(err) => assert_one_fails(err)
+}
+
+test_verify_one_file! {
     #[test] unit_return_value_issue2321 verus_code! {
         use vstd::prelude::*;
         async fn set_zero(x: &mut usize)

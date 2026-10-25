@@ -2373,6 +2373,29 @@ pub(crate) fn ty_remove_references<'tcx>(
     }
 }
 
+pub(crate) fn resolve_async_trait_opaque_return<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    fn_def_id: DefId,
+    ty: rustc_middle::ty::Ty<'tcx>,
+) -> rustc_middle::ty::Ty<'tcx> {
+    // Async trait methods expose their opaque future through an RPITIT projection.
+    if tcx.asyncness(fn_def_id).is_async()
+        && let rustc_middle::ty::TyKind::Alias(
+            _,
+            rustc_middle::ty::AliasTy {
+                kind: rustc_middle::ty::AliasTyKind::Projection { def_id },
+                args,
+                ..
+            },
+        ) = ty.kind()
+        && tcx.is_impl_trait_in_trait(*def_id)
+    {
+        tcx.type_of(*def_id).instantiate(tcx, args).skip_norm_wip()
+    } else {
+        ty
+    }
+}
+
 /// Add the OpaqueDef to vir if the function returns an opaque type.
 /// If the opaque type is defined by assume specification,
 /// check the opaque type defined by the original assume_specification function too.
@@ -2392,6 +2415,7 @@ pub(crate) fn check_fn_opaque_ty<'tcx>(
         return Ok((assume_specification_opaque_type_map, hidden_type_eqs));
     }
     let ty = ctxt.tcx.fn_sig(*fn_def_id).skip_binder().output().skip_binder();
+    let ty = resolve_async_trait_opaque_return(ctxt.tcx, *fn_def_id, ty);
     let assume_specification_ty =
         if let Some(assume_specification_def_id) = assume_specification_def_id {
             Some(ctxt.tcx.fn_sig(*assume_specification_def_id).skip_binder().output().skip_binder())

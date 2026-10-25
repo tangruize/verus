@@ -2689,7 +2689,8 @@ impl Verifier {
 
         let crate_items = crate::external::get_crate_items(&ctxtx).map_err(map_errs_diagnostics)?;
 
-        check_no_opaque_types_in_trait(ctxtx.tcx, &crate_items).map_err(map_err_diagnostics)?;
+        check_no_non_async_opaque_types_in_trait(ctxtx.tcx, &crate_items)
+            .map_err(map_err_diagnostics)?;
 
         if !self.args.no_lifetime {
             crate::erase::setup_verus_aware_ids(&crate_items);
@@ -2883,10 +2884,9 @@ fn delete_dir_if_exists_and_is_dir(dir: &std::path::PathBuf) -> Result<(), VirEr
     })
 }
 
-/// Currently performing an rustc_hir_analysis::check_crate() with trait methods with opaque return types
-/// will cause the thir_body to run before VerusErasureCtxt is initialized.
-/// We disallow opaque types in trait for now.
-fn check_no_opaque_types_in_trait<'tcx>(
+/// Non-async opaque trait returns can trigger THIR before erasure is initialized.
+/// Async methods instead use the existing async-body lowering.
+fn check_no_non_async_opaque_types_in_trait<'tcx>(
     tcx: TyCtxt<'tcx>,
     crate_items: &crate::external::CrateItems,
 ) -> Result<(), VirErr> {
@@ -2899,7 +2899,9 @@ fn check_no_opaque_types_in_trait<'tcx>(
                 match tcx.hir_trait_item(trait_item_id).kind {
                     rustc_hir::TraitItemKind::Fn(sig, _) => {
                         if let rustc_hir::FnRetTy::Return(ty) = sig.decl.output {
-                            if matches!(ty.kind, rustc_hir::TyKind::OpaqueDef { .. }) {
+                            if matches!(ty.kind, rustc_hir::TyKind::OpaqueDef { .. })
+                                && !sig.header.asyncness.is_async()
+                            {
                                 crate::unsupported_err!(
                                     ty.span,
                                     "Verus does not yet support Opaque types in trait def"

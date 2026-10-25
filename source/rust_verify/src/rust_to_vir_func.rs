@@ -3837,6 +3837,8 @@ fn get_async_inner_return_ty<'tcx>(
 ) -> Result<rustc_middle::ty::Ty<'tcx>, VirErr> {
     let fn_sig = ctxt.tcx.fn_sig(def_id).skip_binder();
     let output = fn_sig.output().skip_binder();
+    let output =
+        crate::rust_to_vir_base::resolve_async_trait_opaque_return(ctxt.tcx, def_id, output);
 
     let rustc_middle::ty::TyKind::Alias(_, al_ty) = output.kind() else {
         crate::internal_err!(span, "get_async_inner_return_ty");
