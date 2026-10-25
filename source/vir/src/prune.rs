@@ -1099,27 +1099,6 @@ pub fn prune_krate_for_module_or_krate(
             if is_root_function(f) {
                 // our function
                 reach(&mut state.reached_functions, &mut state.worklist_functions, &f.x.name);
-
-                // an async function, we need to include async related functions
-                if f.x.attrs.is_async {
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "view"),
-                    );
-
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "awaited"),
-                    );
-
-                    reach(
-                        &mut state.reached_functions,
-                        &mut state.worklist_functions,
-                        &crate::fun!(CrateId::Vstd => "future", "exec_await"),
-                    );
-                }
             }
             continue;
         }
@@ -1312,6 +1291,16 @@ pub fn prune_krate_for_module_or_krate(
         assert_by_compute,
         assert_by_compute_seq_funs,
     };
+    if krate.functions.iter().any(|f| is_root_function(f) && f.x.attrs.is_async) {
+        // Some pruning contexts do not import vstd's async helpers.
+        for function in [
+            crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "view"),
+            crate::fun!(CrateId::Vstd => "future", "FutureAdditionalSpecFns", "awaited"),
+            crate::fun!(CrateId::Vstd => "future", "exec_await"),
+        ] {
+            reach_function(&ctxt, &mut state, &function);
+        }
+    }
     traverse_reachable(&ctxt, &mut state);
 
     for tr in krate.traits.iter() {
