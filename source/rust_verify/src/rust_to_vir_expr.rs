@@ -4197,7 +4197,10 @@ fn direct_captures<'tcx>(
             && match capture.place.base_ty.kind() {
                 TyKind::Adt(def, args) if def.is_struct() && def.did().is_local() => {
                     def.non_enum_variant().fields.iter().all(|field| {
-                        let typ = field.ty(bctx.ctxt.tcx, args);
+                        let typ = bctx.ctxt.tcx.normalize_erasing_regions(
+                            TypingEnv::post_analysis(bctx.ctxt.tcx, bctx.fun_id),
+                            field.ty(bctx.ctxt.tcx, args),
+                        );
                         scalar(typ)
                             || matches!(typ.kind(), TyKind::Ref(_, inner, _) if scalar(*inner))
                     })
